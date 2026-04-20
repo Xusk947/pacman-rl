@@ -17,6 +17,7 @@ from pacman_rl.models import CNNActorCritic
 from pacman_rl.rl import RolloutBatch, compute_gae, ppo_update
 from pacman_rl.rl.snapshot_pool import SnapshotPool
 from pacman_rl.telemetry import GameRecordConfig, TelemetryBuffer, record_game, write_telemetry_xlsx
+from pacman_rl.telemetry.gif import render_game_gif
 from pacman_rl.telemetry.telegram import send_document, send_message, telegram_target_from_env
 from pacman_rl.utils import load_checkpoint, load_dotenv, resolve_device, save_checkpoint
 
@@ -330,7 +331,15 @@ def main() -> None:
         record_max_steps=args.record_max_steps,
     )
 
-    device = resolve_device(cfg.device)
+    if cfg.device == "auto":
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            print("✅ Используем GPU 🚀")
+        else:
+            device = torch.device("cpu")
+            print("⚠️ GPU не найден, используем CPU 🧠")
+    else:
+        device = resolve_device(cfg.device)
     env_cfg = EnvConfig()
     ppo_cfg = PPOConfig()
     sp_cfg = SelfPlayConfig()
@@ -475,6 +484,7 @@ def main() -> None:
             report_dir = cfg.run_dir / "reports" / f"update_{update + 1}"
             xlsx_path = report_dir / "telemetry.xlsx"
             game_path = report_dir / "game.json"
+            gif_path = report_dir / "game.gif"
             zip_path = report_dir / "bundle.zip"
 
             rows = telemetry.to_rows()
@@ -488,17 +498,25 @@ def main() -> None:
                 env_cfg=env_cfg,
                 cfg=GameRecordConfig(max_steps=cfg.record_max_steps),
             )
+            try:
+                render_game_gif(game_path, gif_path)
+            except Exception as e:
+                print("gif_render_failed=" + str(e))
 
             report_dir.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
                 zf.write(ckpt_path, arcname="weights.pt")
                 zf.write(xlsx_path, arcname="telemetry.xlsx")
                 zf.write(game_path, arcname="game.json")
+                if gif_path.exists():
+                    zf.write(gif_path, arcname="game.gif")
 
             if telegram_target is not None:
                 try:
                     window = rows[-cfg.report_every :] if cfg.report_every > 0 else rows
                     caption = _report_caption(update=update + 1, rows=window, elapsed_s=time.time() - train_start_s)
+                    if gif_path.exists():
+                        send_document(target=telegram_target, file_path=gif_path, caption=caption)
                     send_document(target=telegram_target, file_path=zip_path, caption=caption)
                 except Exception as e:
                     print("telegram_send_failed=" + str(e))
