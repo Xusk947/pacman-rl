@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
@@ -113,10 +114,11 @@ class PostgresLogger:
         return not existed_before
 
     def log_run_start(self, *, meta: dict[str, Any]) -> None:
+        meta_json = json.dumps(meta)
         cur = self.conn.cursor()
         cur.execute(
-            "insert into runs(run_uuid, meta) values (%s, %s) on conflict (run_uuid) do nothing",
-            (self.run_uuid, meta),
+            "insert into runs(run_uuid, meta) values (%s, %s::jsonb) on conflict (run_uuid) do nothing",
+            (self.run_uuid, meta_json),
         )
         try:
             cur.close()
