@@ -19,6 +19,7 @@ from pacman_rl.telemetry import GameRecordConfig, TelemetryBuffer, record_game, 
 from pacman_rl.telemetry.gif import render_game_gif
 from pacman_rl.telemetry.telegram import send_document, send_message, telegram_target_from_env
 from pacman_rl.utils import load_checkpoint, load_dotenv, resolve_device, save_checkpoint, save_model_weights
+from pacman_rl.utils.device import cuda_compatibility
 
 
 @dataclass(frozen=True)
@@ -361,12 +362,16 @@ def main() -> None:
     )
 
     if cfg.device == "auto":
-        if torch.cuda.is_available():
+        ok, reason = cuda_compatibility()
+        if ok:
             device = torch.device("cuda")
             print("✅ Using GPU 🚀")
         else:
             device = torch.device("cpu")
-            print("⚠️ GPU not found, using CPU 🧠")
+            if torch.cuda.is_available():
+                print("⚠️ CUDA GPU detected but incompatible with this PyTorch build; using CPU. reason=" + reason)
+            else:
+                print("⚠️ GPU not found, using CPU 🧠")
     else:
         device = resolve_device(cfg.device)
     env_cfg = EnvConfig()
