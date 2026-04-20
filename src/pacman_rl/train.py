@@ -47,6 +47,7 @@ class TrainConfig:
     telegram_status_every_episodes: int
     telegram_sleep_s: float
     telegram_send_recordings: bool
+    recordings_every: int
     postgres: bool
     postgres_url_env: str
 
@@ -393,6 +394,7 @@ def main() -> None:
     parser.add_argument("--telegram-status-every-episodes", type=int, default=50)
     parser.add_argument("--telegram-sleep-s", type=float, default=0.5)
     parser.add_argument("--telegram-send-recordings", action="store_true")
+    parser.add_argument("--recordings-every", type=int, default=0)
     parser.add_argument("--postgres", action="store_true")
     parser.add_argument("--postgres-url-env", type=str, default="DATABASE_URL")
 
@@ -416,6 +418,7 @@ def main() -> None:
         telegram_status_every_episodes=args.telegram_status_every_episodes,
         telegram_sleep_s=float(args.telegram_sleep_s),
         telegram_send_recordings=bool(args.telegram_send_recordings),
+        recordings_every=int(args.recordings_every),
         postgres=bool(args.postgres),
         postgres_url_env=str(args.postgres_url_env),
     )
@@ -505,6 +508,7 @@ def main() -> None:
     total_episodes = 0
     last_status_sent = 0
     last_report_sent = 0
+    last_record_sent = 0
 
     for update in range(start_update, cfg.updates):
         update_start_s = time.time()
@@ -634,12 +638,25 @@ def main() -> None:
                 except Exception as e:
                     print("weights_save_failed=" + str(e))
 
-                if cfg.telegram_send_recordings:
+                _maybe_send_file(target=telegram_target, file_path=xlsx_path, caption="")
+                time.sleep(cfg.telegram_sleep_s)
+                _maybe_send_file(target=telegram_target, file_path=weights_path, caption="")
+                time.sleep(cfg.telegram_sleep_s)
+
+        if telegram_target is not None and cfg.telegram_send_recordings:
+            rec_every = cfg.recordings_every if cfg.recordings_every > 0 else cfg.report_every
+            if rec_every > 0:
+                record_to_send = (total_episodes // rec_every) * rec_every
+                if record_to_send > last_record_sent:
+                    record_episodes = record_to_send
+                    last_record_sent = record_to_send
+
+                    report_dir = cfg.run_dir / "reports" / f"recordings_{record_episodes}"
                     demo_cfg = GameRecordConfig(max_steps=cfg.record_max_steps, idle_steps=cfg.record_idle_steps)
                     gif_paths: list[Path] = []
                     for lay in chosen_layouts:
-                        game_path = report_dir / f"game_{lay.name}_{report_episodes}.json"
-                        gif_path = report_dir / f"game_{lay.name}_{report_episodes}.gif"
+                        game_path = report_dir / f"game_{lay.name}_{record_episodes}.json"
+                        gif_path = report_dir / f"game_{lay.name}_{record_episodes}.gif"
                         try:
                             record_game(
                                 game_path,
@@ -655,6 +672,7 @@ def main() -> None:
                                 gif_paths.append(gif_path)
                         except Exception as e:
                             print("demo_send_failed=" + str(e))
+
                     if gif_paths:
                         for i in range(0, len(gif_paths), 10):
                             batch = gif_paths[i : i + 10]
@@ -665,11 +683,6 @@ def main() -> None:
                                 except TelegramRateLimitError as e:
                                     time.sleep(float(e.retry_after_s) + 0.5)
                             time.sleep(cfg.telegram_sleep_s)
-
-                _maybe_send_file(target=telegram_target, file_path=xlsx_path, caption="")
-                time.sleep(cfg.telegram_sleep_s)
-                _maybe_send_file(target=telegram_target, file_path=weights_path, caption="")
-                time.sleep(cfg.telegram_sleep_s)
 
     save_checkpoint(
         cfg.run_dir / "checkpoints" / f"final_update_{cfg.updates}.pt",
