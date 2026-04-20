@@ -45,6 +45,7 @@ class PostgresLogger:
     database_url: str
     run_uuid: str
     conn: Any
+    schema_created: bool
 
     @classmethod
     def from_env(cls, *, url_env: str = "DATABASE_URL") -> PostgresLogger | None:
@@ -57,8 +58,8 @@ class PostgresLogger:
             conn.autocommit = True
         except Exception:
             pass
-        out = cls(database_url=url, run_uuid=run_uuid, conn=conn)
-        out.ensure_schema()
+        out = cls(database_url=url, run_uuid=run_uuid, conn=conn, schema_created=False)
+        out.schema_created = out.ensure_schema()
         return out
 
     def close(self) -> None:
@@ -67,7 +68,18 @@ class PostgresLogger:
         except Exception:
             pass
 
-    def ensure_schema(self) -> None:
+    def ensure_schema(self) -> bool:
+        cur = self.conn.cursor()
+        cur.execute(
+            "select (to_regclass('public.runs') is not null) as runs, (to_regclass('public.episodes') is not null) as episodes"
+        )
+        row = cur.fetchone()
+        existed_before = bool(row[0]) and bool(row[1])
+        try:
+            cur.close()
+        except Exception:
+            pass
+
         sql = """
         create table if not exists runs (
           run_uuid text primary key,
@@ -98,6 +110,7 @@ class PostgresLogger:
             cur.close()
         except Exception:
             pass
+        return not existed_before
 
     def log_run_start(self, *, meta: dict[str, Any]) -> None:
         cur = self.conn.cursor()

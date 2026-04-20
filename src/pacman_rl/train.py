@@ -484,8 +484,13 @@ def main() -> None:
         try:
             pg = PostgresLogger.from_env(url_env=cfg.postgres_url_env)
         except Exception as e:
-            print("postgres_init_failed=" + str(e))
-            pg = None
+            print("postgres_init_failed=" + str(e) + " ❌")
+            raise SystemExit(1) from e
+    if pg is not None:
+        if pg.schema_created:
+            print("Postgres schema created 🆕✅")
+        else:
+            print("Postgres schema exists ✅")
     if pg is not None:
         try:
             run_uuid = pg.run_uuid
@@ -499,8 +504,8 @@ def main() -> None:
                 }
             )
         except Exception as e:
-            print("postgres_run_failed=" + str(e))
-            pg = None
+            print("postgres_run_failed=" + str(e) + " ❌")
+            raise SystemExit(1) from e
 
     telegram_target = None
     if cfg.telegram:
