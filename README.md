@@ -32,6 +32,8 @@ python -m pacman_rl.train --layout-dir layouts --device auto --telegram
 
 The trainer sends a “training started” message and a final summary message. Every `--report-every` updates it also sends `game.gif`, `rewards.png`, `telemetry.xlsx`, `game.json`, and the checkpoint file.
 
+Demo recording can be capped via `--record-max-steps` and it will stop early if the game is idle for too long (`--record-idle-steps`).
+
 ## Project layout
 
 ```text

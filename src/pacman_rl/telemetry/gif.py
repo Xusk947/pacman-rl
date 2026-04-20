@@ -70,10 +70,25 @@ def render_game_gif(
         (255, 165, 0),
     ]
 
+    last_state = None
     for f in used:
         pac_rc = tuple(f["pac_xy"])
         pellets.discard(pac_rc)
         power.discard(pac_rc)
+
+        state = (
+            pac_rc,
+            tuple(tuple(x) for x in f["ghost_xy"]),
+            tuple(bool(x) for x in f["ghost_present"]),
+            tuple(int(x) for x in f["scared"]),
+            int(f.get("pellets_left", 0)),
+            int(f.get("power_left", 0)),
+        )
+        if last_state is not None and state == last_state:
+            if bool(f.get("done", False)):
+                break
+            continue
+        last_state = state
 
         img = Image.new("RGB", (w * cfg.cell_px, h * cfg.cell_px), (0, 0, 0))
         d = ImageDraw.Draw(img)

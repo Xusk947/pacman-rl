@@ -35,6 +35,7 @@ class TrainConfig:
     bot_token_env: str
     chat_id_env: str
     record_max_steps: int
+    record_idle_steps: int
 
 
 def _mean(values: list[float]) -> float:
@@ -335,6 +336,7 @@ def main() -> None:
     parser.add_argument("--bot-token-env", type=str, default="BOT_TOKEN")
     parser.add_argument("--chat-id-env", type=str, default="CHAT_ID")
     parser.add_argument("--record-max-steps", type=int, default=512)
+    parser.add_argument("--record-idle-steps", type=int, default=120)
 
     args = parser.parse_args()
 
@@ -352,6 +354,7 @@ def main() -> None:
         bot_token_env=args.bot_token_env,
         chat_id_env=args.chat_id_env,
         record_max_steps=args.record_max_steps,
+        record_idle_steps=args.record_idle_steps,
     )
 
     if cfg.device == "auto":
@@ -523,7 +526,7 @@ def main() -> None:
                 ghosts=ghosts,
                 device=device,
                 env_cfg=env_cfg,
-                cfg=GameRecordConfig(max_steps=cfg.record_max_steps),
+                cfg=GameRecordConfig(max_steps=cfg.record_max_steps, idle_steps=cfg.record_idle_steps),
             )
             try:
                 render_game_gif(game_path, gif_path)

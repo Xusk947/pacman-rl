@@ -17,6 +17,7 @@ from pacman_rl.models import CNNActorCritic
 @dataclass(frozen=True)
 class GameRecordConfig:
     max_steps: int = 512
+    idle_steps: int = 120
 
 
 def _sample_action(model: CNNActorCritic, obs: torch.Tensor) -> torch.Tensor:
@@ -46,6 +47,9 @@ def record_game(
     frames: list[dict[str, Any]] = []
     pac_obs, ghost_obs = env.get_obs()
 
+    idle = 0
+    last_state = None
+
     for t in range(cfg.max_steps):
         with torch.no_grad():
             pac_action = _sample_action(pacman, pac_obs)
@@ -57,6 +61,20 @@ def record_game(
 
         pellets_left = int(env.pellets.sum().item())
         power_left = int(env.power.sum().item())
+
+        state = (
+            tuple(env.pac_xy[0].tolist()),
+            tuple(tuple(x) for x in env.ghost_xy[0].tolist()),
+            tuple(env.ghost_present[0].tolist()),
+            tuple(env.scared[0].tolist()),
+            pellets_left,
+            power_left,
+        )
+        if last_state is not None and state == last_state:
+            idle += 1
+        else:
+            idle = 0
+        last_state = state
 
         frames.append(
             {
@@ -77,6 +95,8 @@ def record_game(
 
         pac_obs, ghost_obs = out.pac_obs, out.ghost_obs
         if out.done[0].item():
+            break
+        if cfg.idle_steps > 0 and idle >= cfg.idle_steps:
             break
 
     payload = {
