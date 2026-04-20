@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import time
-import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,6 +17,7 @@ from pacman_rl.rl import RolloutBatch, compute_gae, ppo_update
 from pacman_rl.rl.snapshot_pool import SnapshotPool
 from pacman_rl.telemetry import GameRecordConfig, TelemetryBuffer, record_game, write_telemetry_xlsx
 from pacman_rl.telemetry.gif import render_game_gif
+from pacman_rl.telemetry.plot_png import render_rewards_png
 from pacman_rl.telemetry.telegram import send_document, send_message, telegram_target_from_env
 from pacman_rl.utils import load_checkpoint, load_dotenv, resolve_device, save_checkpoint
 
@@ -115,6 +115,29 @@ def _final_summary_text(
         + f"{ghost_best:.3f}"
         + ")"
     )
+
+
+def _maybe_send_file(
+    *,
+    target: Any,
+    file_path: Path,
+    caption: str,
+    max_mb: int = 45,
+) -> bool:
+    if not file_path.exists():
+        return False
+    size = file_path.stat().st_size
+    if size > max_mb * 1024 * 1024:
+        try:
+            send_message(
+                target=target,
+                text=f"Skip file (too large): {file_path.name} size={size / (1024 * 1024):.1f}MB",
+            )
+        except Exception:
+            pass
+        return False
+    send_document(target=target, file_path=file_path, caption=caption)
+    return True
 
 
 def _choose_layout_group(layout_dir: Path) -> list:
@@ -485,10 +508,14 @@ def main() -> None:
             xlsx_path = report_dir / "telemetry.xlsx"
             game_path = report_dir / "game.json"
             gif_path = report_dir / "game.gif"
-            zip_path = report_dir / "bundle.zip"
+            plot_path = report_dir / "rewards.png"
 
             rows = telemetry.to_rows()
             write_telemetry_xlsx(xlsx_path, rows=rows)
+            try:
+                render_rewards_png(plot_path, rows=rows)
+            except Exception as e:
+                print("plot_render_failed=" + str(e))
             record_game(
                 game_path,
                 layout=chosen_layouts[0],
@@ -503,21 +530,15 @@ def main() -> None:
             except Exception as e:
                 print("gif_render_failed=" + str(e))
 
-            report_dir.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.write(ckpt_path, arcname="weights.pt")
-                zf.write(xlsx_path, arcname="telemetry.xlsx")
-                zf.write(game_path, arcname="game.json")
-                if gif_path.exists():
-                    zf.write(gif_path, arcname="game.gif")
-
             if telegram_target is not None:
                 try:
                     window = rows[-cfg.report_every :] if cfg.report_every > 0 else rows
                     caption = _report_caption(update=update + 1, rows=window, elapsed_s=time.time() - train_start_s)
-                    if gif_path.exists():
-                        send_document(target=telegram_target, file_path=gif_path, caption=caption)
-                    send_document(target=telegram_target, file_path=zip_path, caption=caption)
+                    _maybe_send_file(target=telegram_target, file_path=gif_path, caption=caption)
+                    _maybe_send_file(target=telegram_target, file_path=plot_path, caption=caption)
+                    _maybe_send_file(target=telegram_target, file_path=xlsx_path, caption=caption)
+                    _maybe_send_file(target=telegram_target, file_path=game_path, caption=caption)
+                    _maybe_send_file(target=telegram_target, file_path=ckpt_path, caption=caption)
                 except Exception as e:
                     print("telegram_send_failed=" + str(e))
 

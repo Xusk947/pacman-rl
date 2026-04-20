@@ -30,7 +30,7 @@ Then run with `--telegram`:
 python -m pacman_rl.train --layout-dir layouts --device auto --telegram
 ```
 
-The trainer sends a “training started” message and a final summary message. Every `--report-every` updates it also sends `game.gif` and a `bundle.zip` with checkpoint + telemetry + game JSON.
+The trainer sends a “training started” message and a final summary message. Every `--report-every` updates it also sends `game.gif`, `rewards.png`, `telemetry.xlsx`, `game.json`, and the checkpoint file.
 
 ## Project layout
 

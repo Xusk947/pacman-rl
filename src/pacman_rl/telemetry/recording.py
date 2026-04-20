@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch.distributions import Categorical
 
 from pacman_rl.config import EnvConfig
 from pacman_rl.env import TorchPacmanEnv
@@ -18,9 +19,10 @@ class GameRecordConfig:
     max_steps: int = 512
 
 
-def _argmax_action(model: CNNActorCritic, obs: torch.Tensor) -> torch.Tensor:
+def _sample_action(model: CNNActorCritic, obs: torch.Tensor) -> torch.Tensor:
     out = model(obs)
-    return torch.argmax(out.logits, dim=-1)
+    dist = Categorical(logits=out.logits)
+    return dist.sample()
 
 
 def record_game(
@@ -46,9 +48,9 @@ def record_game(
 
     for t in range(cfg.max_steps):
         with torch.no_grad():
-            pac_action = _argmax_action(pacman, pac_obs)
+            pac_action = _sample_action(pacman, pac_obs)
             g_flat = ghost_obs.view(env.GMAX, ghost_obs.shape[2], env.height, env.width)
-            g_action = _argmax_action(ghosts, g_flat).view(1, env.GMAX)
+            g_action = _sample_action(ghosts, g_flat).view(1, env.GMAX)
             g_action = torch.where(env.ghost_present, g_action, torch.zeros_like(g_action))
 
         out = env.step(pac_action, g_action)
@@ -82,4 +84,3 @@ def record_game(
         "frames": frames,
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-

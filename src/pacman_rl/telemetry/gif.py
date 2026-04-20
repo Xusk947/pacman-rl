@@ -11,7 +11,7 @@ class GifRenderConfig:
     cell_px: int = 24
     fps: int = 12
     max_frames: int = 300
-    stride: int = 2
+    stride: int = 1
 
 
 def render_game_gif(
