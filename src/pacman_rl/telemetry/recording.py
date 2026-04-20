@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import torch
+
+from pacman_rl.config import EnvConfig
+from pacman_rl.env import TorchPacmanEnv
+from pacman_rl.layouts import ParsedLayout
+from pacman_rl.models import CNNActorCritic
+
+
+@dataclass(frozen=True)
+class GameRecordConfig:
+    max_steps: int = 512
+
+
+def _argmax_action(model: CNNActorCritic, obs: torch.Tensor) -> torch.Tensor:
+    out = model(obs)
+    return torch.argmax(out.logits, dim=-1)
+
+
+def record_game(
+    path: Path,
+    *,
+    layout: ParsedLayout,
+    pacman: CNNActorCritic,
+    ghosts: CNNActorCritic,
+    device: torch.device,
+    env_cfg: EnvConfig,
+    cfg: GameRecordConfig = GameRecordConfig(),
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    env = TorchPacmanEnv([layout], batch_size=1, device=device, cfg=env_cfg)
+    env.reset_with_layout_indices(torch.zeros((1,), device=device, dtype=torch.int64))
+
+    pacman.eval()
+    ghosts.eval()
+
+    frames: list[dict[str, Any]] = []
+    pac_obs, ghost_obs = env.get_obs()
+
+    for t in range(cfg.max_steps):
+        with torch.no_grad():
+            pac_action = _argmax_action(pacman, pac_obs)
+            g_flat = ghost_obs.view(env.GMAX, ghost_obs.shape[2], env.height, env.width)
+            g_action = _argmax_action(ghosts, g_flat).view(1, env.GMAX)
+            g_action = torch.where(env.ghost_present, g_action, torch.zeros_like(g_action))
+
+        out = env.step(pac_action, g_action)
+
+        pellets_left = int(env.pellets.sum().item())
+        power_left = int(env.power.sum().item())
+
+        frames.append(
+            {
+                "t": t,
+                "pac_xy": env.pac_xy[0].tolist(),
+                "ghost_xy": env.ghost_xy[0].tolist(),
+                "ghost_present": env.ghost_present[0].tolist(),
+                "scared": env.scared[0].tolist(),
+                "pac_action": int(pac_action.item()),
+                "ghost_action": g_action[0].tolist(),
+                "pac_reward": float(out.pac_reward[0].item()),
+                "ghost_reward": out.ghost_reward[0].tolist(),
+                "done": bool(out.done[0].item()),
+                "pellets_left": pellets_left,
+                "power_left": power_left,
+            }
+        )
+
+        pac_obs, ghost_obs = out.pac_obs, out.ghost_obs
+        if out.done[0].item():
+            break
+
+    payload = {
+        "layout": {"name": layout.name, "rows": layout.rows, "height": layout.height, "width": layout.width},
+        "frames": frames,
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
