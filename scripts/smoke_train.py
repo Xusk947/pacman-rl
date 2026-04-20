@@ -25,10 +25,6 @@ def main() -> None:
         "--run-dir",
         "runs/smoke",
         "--telegram",
-        "--bot-token-env",
-        "--chat-id-env",
-        
-        
     ]
     print("Running:", " ".join(cmd))
     subprocess.check_call(cmd, env=env)

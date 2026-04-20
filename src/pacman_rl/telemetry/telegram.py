@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib import parse
 from urllib import request
 
 
@@ -23,6 +24,19 @@ def telegram_target_from_env(*, bot_token_env: str, chat_id_env: str) -> Telegra
     if not chat_id:
         raise ValueError(f"missing env var: {chat_id_env}")
     return TelegramTarget(bot_token=bot_token, chat_id=chat_id)
+
+
+def send_message(*, target: TelegramTarget, text: str, timeout_s: int = 30) -> dict[str, Any]:
+    url = f"https://api.telegram.org/bot{target.bot_token}/sendMessage"
+    body = parse.urlencode({"chat_id": target.chat_id, "text": text}).encode("utf-8")
+
+    req = request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    req.add_header("Content-Length", str(len(body)))
+
+    with request.urlopen(req, timeout=timeout_s) as resp:
+        data = resp.read()
+    return {"status": "ok", "bytes": len(data)}
 
 
 def _encode_multipart(fields: dict[str, str], files: dict[str, tuple[str, bytes, str]]) -> tuple[bytes, str]:
@@ -72,4 +86,3 @@ def send_document(
     with request.urlopen(req, timeout=timeout_s) as resp:
         data = resp.read()
     return {"status": "ok", "bytes": len(data)}
-

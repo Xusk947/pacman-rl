@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch.distributions import Categorical
@@ -15,8 +17,8 @@ from pacman_rl.models import CNNActorCritic
 from pacman_rl.rl import RolloutBatch, compute_gae, ppo_update
 from pacman_rl.rl.snapshot_pool import SnapshotPool
 from pacman_rl.telemetry import GameRecordConfig, TelemetryBuffer, record_game, write_telemetry_xlsx
-from pacman_rl.telemetry.telegram import send_document, telegram_target_from_env
-from pacman_rl.utils import load_checkpoint, resolve_device, save_checkpoint
+from pacman_rl.telemetry.telegram import send_document, send_message, telegram_target_from_env
+from pacman_rl.utils import load_checkpoint, load_dotenv, resolve_device, save_checkpoint
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,86 @@ class TrainConfig:
     bot_token_env: str
     chat_id_env: str
     record_max_steps: int
+
+
+def _mean(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))
+
+
+def _format_duration(seconds: float) -> str:
+    s = int(seconds)
+    h = s // 3600
+    s -= h * 3600
+    m = s // 60
+    s -= m * 60
+    if h > 0:
+        return f"{h}h{m:02d}m{s:02d}s"
+    if m > 0:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
+def _report_caption(*, update: int, rows: list[dict[str, Any]], elapsed_s: float) -> str:
+    pac = _mean([float(r.get("pacman_reward_mean", 0.0)) for r in rows])
+    ghosts = _mean([float(r.get("ghosts_reward_mean", 0.0)) for r in rows])
+    return (
+        "pacman-rl"
+        + " update="
+        + str(update)
+        + " mean_reward(pac="
+        + f"{pac:.3f}"
+        + " ghosts="
+        + f"{ghosts:.3f}"
+        + ") elapsed="
+        + _format_duration(elapsed_s)
+    )
+
+
+def _final_summary_text(
+    *,
+    start_update: int,
+    total_updates: int,
+    rows: list[dict[str, Any]],
+    elapsed_s: float,
+    batch_size: int,
+    rollout_steps: int,
+) -> str:
+    pac_values = [float(r.get("pacman_reward_mean", 0.0)) for r in rows]
+    ghost_values = [float(r.get("ghosts_reward_mean", 0.0)) for r in rows]
+    pac_last = pac_values[-1] if pac_values else 0.0
+    ghost_last = ghost_values[-1] if ghost_values else 0.0
+    pac_best = max(pac_values) if pac_values else 0.0
+    ghost_best = max(ghost_values) if ghost_values else 0.0
+
+    updates_done = max(0, total_updates - start_update)
+    total_env_steps = updates_done * rollout_steps * batch_size
+
+    return (
+        "Обучение завершено\n"
+        + "updates="
+        + str(total_updates)
+        + " (start="
+        + str(start_update)
+        + ")\n"
+        + "elapsed="
+        + _format_duration(elapsed_s)
+        + "\n"
+        + "env_steps≈"
+        + str(total_env_steps)
+        + "\n"
+        + "last_reward(pac="
+        + f"{pac_last:.3f}"
+        + " ghosts="
+        + f"{ghost_last:.3f}"
+        + ")\n"
+        + "best_reward(pac="
+        + f"{pac_best:.3f}"
+        + " ghosts="
+        + f"{ghost_best:.3f}"
+        + ")"
+    )
 
 
 def _choose_layout_group(layout_dir: Path) -> list:
@@ -232,6 +314,8 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    load_dotenv()
+
     cfg = TrainConfig(
         batch_size=args.batch_size,
         updates=args.updates,
@@ -282,7 +366,43 @@ def main() -> None:
     rng = torch.Generator(device="cpu")
     telemetry = TelemetryBuffer()
 
+    telegram_target = None
+    if cfg.telegram:
+        try:
+            telegram_target = telegram_target_from_env(bot_token_env=cfg.bot_token_env, chat_id_env=cfg.chat_id_env)
+        except Exception as e:
+            print("telegram_init_failed=" + str(e))
+            telegram_target = None
+
+    train_start_s = time.time()
+    if telegram_target is not None:
+        try:
+            send_message(
+                target=telegram_target,
+                text=(
+                    "Обучение началось\n"
+                    + "run_dir="
+                    + str(cfg.run_dir)
+                    + "\n"
+                    + "device="
+                    + str(device)
+                    + "\n"
+                    + "batch_size="
+                    + str(cfg.batch_size)
+                    + " updates="
+                    + str(cfg.updates)
+                    + " start_update="
+                    + str(start_update)
+                    + "\n"
+                    + "layouts="
+                    + str(len(chosen_layouts))
+                ),
+            )
+        except Exception as e:
+            print("telegram_send_failed=" + str(e))
+
     for update in range(start_update, cfg.updates):
+        update_start_s = time.time()
         if update % sp_cfg.snapshot_every_updates == 0 and update != start_update:
             pacman_pool.add(pacman)
             ghosts_pool.add(ghosts)
@@ -305,11 +425,15 @@ def main() -> None:
         ghost_batch, ghost_rew = _collect_rollout_for_ghosts(env, pacman_opponent, ghosts, ppo_cfg)
         ghost_stats = ppo_update(ghosts, ghosts_opt, ghost_batch, ppo_cfg)
 
+        update_time_s = time.time() - update_start_s
+        elapsed_s = time.time() - train_start_s
         telemetry.add(
             {
                 "update": update + 1,
                 "pacman_reward_mean": float(pac_rew),
                 "ghosts_reward_mean": float(ghost_rew),
+                "update_time_s": float(update_time_s),
+                "elapsed_s": float(elapsed_s),
                 "pacman_loss": pac_stats.loss,
                 "pacman_policy_loss": pac_stats.policy_loss,
                 "pacman_value_loss": pac_stats.value_loss,
@@ -353,7 +477,8 @@ def main() -> None:
             game_path = report_dir / "game.json"
             zip_path = report_dir / "bundle.zip"
 
-            write_telemetry_xlsx(xlsx_path, rows=telemetry.to_rows())
+            rows = telemetry.to_rows()
+            write_telemetry_xlsx(xlsx_path, rows=rows)
             record_game(
                 game_path,
                 layout=chosen_layouts[0],
@@ -370,10 +495,11 @@ def main() -> None:
                 zf.write(xlsx_path, arcname="telemetry.xlsx")
                 zf.write(game_path, arcname="game.json")
 
-            if cfg.telegram:
+            if telegram_target is not None:
                 try:
-                    target = telegram_target_from_env(bot_token_env=cfg.bot_token_env, chat_id_env=cfg.chat_id_env)
-                    send_document(target=target, file_path=zip_path, caption=f"pacman-rl update {update + 1}")
+                    window = rows[-cfg.report_every :] if cfg.report_every > 0 else rows
+                    caption = _report_caption(update=update + 1, rows=window, elapsed_s=time.time() - train_start_s)
+                    send_document(target=telegram_target, file_path=zip_path, caption=caption)
                 except Exception as e:
                     print("telegram_send_failed=" + str(e))
 
@@ -385,6 +511,21 @@ def main() -> None:
         ghosts_model=ghosts,
         ghosts_opt=ghosts_opt,
     )
+    if telegram_target is not None:
+        try:
+            send_message(
+                target=telegram_target,
+                text=_final_summary_text(
+                    start_update=start_update,
+                    total_updates=cfg.updates,
+                    rows=telemetry.to_rows(),
+                    elapsed_s=time.time() - train_start_s,
+                    batch_size=cfg.batch_size,
+                    rollout_steps=ppo_cfg.rollout_steps,
+                ),
+            )
+        except Exception as e:
+            print("telegram_send_failed=" + str(e))
 
 
 if __name__ == "__main__":
