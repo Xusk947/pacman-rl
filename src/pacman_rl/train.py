@@ -38,6 +38,79 @@ class TrainConfig:
     record_idle_steps: int
 
 
+@dataclass
+class EpisodeStats:
+    episodes: int = 0
+    pellets: int = 0
+    power: int = 0
+    ghosts: int = 0
+    steps: int = 0
+    deaths: int = 0
+    wins: int = 0
+    timeouts: int = 0
+
+
+class EpisodeAccumulator:
+    def __init__(self, *, batch_size: int, device: torch.device) -> None:
+        self._pellets = torch.zeros((batch_size,), device=device, dtype=torch.int64)
+        self._power = torch.zeros((batch_size,), device=device, dtype=torch.int64)
+        self._ghosts = torch.zeros((batch_size,), device=device, dtype=torch.int64)
+        self._steps = torch.zeros((batch_size,), device=device, dtype=torch.int64)
+
+        self.totals = EpisodeStats()
+
+    def observe(self, out: Any) -> None:
+        self._pellets += out.pellet_eaten.to(torch.int64)
+        self._power += out.power_eaten.to(torch.int64)
+        self._ghosts += out.ghosts_eaten.to(torch.int64)
+        self._steps += 1
+
+        done = out.done
+        if not bool(done.any().item()):
+            return
+
+        idx = done.nonzero(as_tuple=False).squeeze(-1)
+        self.totals.episodes += int(idx.shape[0])
+        self.totals.pellets += int(self._pellets[idx].sum().item())
+        self.totals.power += int(self._power[idx].sum().item())
+        self.totals.ghosts += int(self._ghosts[idx].sum().item())
+        self.totals.steps += int(self._steps[idx].sum().item())
+        self.totals.deaths += int(out.pac_dead[idx].to(torch.int64).sum().item())
+        self.totals.wins += int(out.all_pellets_done[idx].to(torch.int64).sum().item())
+        self.totals.timeouts += int(out.timeout[idx].to(torch.int64).sum().item())
+
+        self._pellets[idx] = 0
+        self._power[idx] = 0
+        self._ghosts[idx] = 0
+        self._steps[idx] = 0
+
+
+def _episode_means(s: EpisodeStats) -> dict[str, float]:
+    if s.episodes <= 0:
+        return {
+            "episodes_finished": 0.0,
+            "pellets_eaten_per_episode": 0.0,
+            "power_eaten_per_episode": 0.0,
+            "ghosts_eaten_per_episode": 0.0,
+            "steps_per_episode": 0.0,
+            "death_rate": 0.0,
+            "win_rate": 0.0,
+            "timeout_rate": 0.0,
+        }
+
+    e = float(s.episodes)
+    return {
+        "episodes_finished": float(s.episodes),
+        "pellets_eaten_per_episode": float(s.pellets) / e,
+        "power_eaten_per_episode": float(s.power) / e,
+        "ghosts_eaten_per_episode": float(s.ghosts) / e,
+        "steps_per_episode": float(s.steps) / e,
+        "death_rate": float(s.deaths) / e,
+        "win_rate": float(s.wins) / e,
+        "timeout_rate": float(s.timeouts) / e,
+    }
+
+
 def _mean(values: list[float]) -> float:
     if not values:
         return 0.0
@@ -174,6 +247,7 @@ def _collect_rollout_for_pacman(
     pacman: CNNActorCritic,
     ghosts_opponent: CNNActorCritic,
     ppo_cfg: PPOConfig,
+    acc: EpisodeAccumulator | None = None,
 ) -> tuple[RolloutBatch, torch.Tensor]:
     b = env.batch_size
     t = ppo_cfg.rollout_steps
@@ -197,6 +271,8 @@ def _collect_rollout_for_pacman(
             ghost_action = g_action.view(b, env.GMAX)
 
         out = env.step(pac_action, ghost_action)
+        if acc is not None:
+            acc.observe(out)
 
         obs_buf[step] = pac_obs
         act_buf[step] = pac_action
@@ -237,6 +313,7 @@ def _collect_rollout_for_ghosts(
     pacman_opponent: CNNActorCritic,
     ghosts: CNNActorCritic,
     ppo_cfg: PPOConfig,
+    acc: EpisodeAccumulator | None = None,
 ) -> tuple[RolloutBatch, torch.Tensor]:
     b = env.batch_size
     t = ppo_cfg.rollout_steps
@@ -267,6 +344,8 @@ def _collect_rollout_for_ghosts(
             ghost_val = torch.where(present, ghost_val, torch.zeros_like(ghost_val))
 
         out = env.step(pac_action, ghost_action)
+        if acc is not None:
+            acc.observe(out)
 
         obs_buf[step] = ghost_obs
         act_buf[step] = ghost_action
@@ -400,6 +479,7 @@ def main() -> None:
 
     rng = torch.Generator(device="cpu")
     telemetry = TelemetryBuffer()
+    episode_acc = EpisodeAccumulator(batch_size=cfg.batch_size, device=device)
 
     telegram_target = None
     if cfg.telegram:
@@ -448,7 +528,8 @@ def main() -> None:
         else:
             _copy_model(ghosts_opponent, ghosts)
 
-        pac_batch, pac_rew = _collect_rollout_for_pacman(env, pacman, ghosts_opponent, ppo_cfg)
+        episode_acc.totals = EpisodeStats()
+        pac_batch, pac_rew = _collect_rollout_for_pacman(env, pacman, ghosts_opponent, ppo_cfg, episode_acc)
         pac_stats = ppo_update(pacman, pacman_opt, pac_batch, ppo_cfg)
 
         use_old_pac = (len(pacman_pool) > 0) and (torch.rand((), generator=rng).item() < sp_cfg.opponent_sample_prob)
@@ -457,19 +538,28 @@ def main() -> None:
         else:
             _copy_model(pacman_opponent, pacman)
 
-        ghost_batch, ghost_rew = _collect_rollout_for_ghosts(env, pacman_opponent, ghosts, ppo_cfg)
+        ghost_batch, ghost_rew = _collect_rollout_for_ghosts(env, pacman_opponent, ghosts, ppo_cfg, episode_acc)
         ghost_stats = ppo_update(ghosts, ghosts_opt, ghost_batch, ppo_cfg)
 
         update_time_s = time.time() - update_start_s
         elapsed_s = time.time() - train_start_s
         steps_per_update = cfg.batch_size * ppo_cfg.rollout_steps * 2
         step = int((update + 1) * steps_per_update)
+        ep = _episode_means(episode_acc.totals)
         telemetry.add(
             {
                 "update": update + 1,
                 "step": step,
                 "pacman_reward_mean": float(pac_rew),
                 "ghosts_reward_mean": float(ghost_rew),
+                "episodes_finished": ep["episodes_finished"],
+                "pellets_eaten_per_episode": ep["pellets_eaten_per_episode"],
+                "power_eaten_per_episode": ep["power_eaten_per_episode"],
+                "ghosts_eaten_per_episode": ep["ghosts_eaten_per_episode"],
+                "steps_per_episode": ep["steps_per_episode"],
+                "win_rate": ep["win_rate"],
+                "death_rate": ep["death_rate"],
+                "timeout_rate": ep["timeout_rate"],
                 "update_time_s": float(update_time_s),
                 "elapsed_s": float(elapsed_s),
                 "pacman_loss": pac_stats.loss,

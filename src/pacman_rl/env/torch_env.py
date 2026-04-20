@@ -15,6 +15,12 @@ class StepOutput:
     pac_reward: torch.Tensor
     ghost_reward: torch.Tensor
     done: torch.Tensor
+    pellet_eaten: torch.Tensor
+    power_eaten: torch.Tensor
+    ghosts_eaten: torch.Tensor
+    pac_dead: torch.Tensor
+    all_pellets_done: torch.Tensor
+    timeout: torch.Tensor
 
 
 def _pos_to_index(pos_rc: torch.Tensor, width: int) -> torch.Tensor:
@@ -157,7 +163,21 @@ class TorchPacmanEnv:
         zeros_b = torch.zeros((b,), device=dev, dtype=torch.float32)
         zeros_bg = torch.zeros((b, self.GMAX), device=dev, dtype=torch.float32)
         done = torch.zeros((b,), device=dev, dtype=torch.bool)
-        return StepOutput(pac_obs=pac_obs, ghost_obs=ghost_obs, pac_reward=zeros_b, ghost_reward=zeros_bg, done=done)
+        zeros_b_bool = torch.zeros((b,), device=dev, dtype=torch.bool)
+        zeros_b_i64 = torch.zeros((b,), device=dev, dtype=torch.int64)
+        return StepOutput(
+            pac_obs=pac_obs,
+            ghost_obs=ghost_obs,
+            pac_reward=zeros_b,
+            ghost_reward=zeros_bg,
+            done=done,
+            pellet_eaten=zeros_b_bool,
+            power_eaten=zeros_b_bool,
+            ghosts_eaten=zeros_b_i64,
+            pac_dead=zeros_b_bool,
+            all_pellets_done=zeros_b_bool,
+            timeout=zeros_b_bool,
+        )
 
     def reset_with_layout_indices(self, layout_idx: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         layout_idx = layout_idx.to(device=self.device, dtype=torch.int64)
@@ -300,18 +320,18 @@ class TorchPacmanEnv:
         done = pac_dead | all_pellets_done | timeout
         self.step_count = torch.where(done, torch.zeros_like(self.step_count), next_step)
 
-        eat_ghost_count = eaten.to(torch.float32).sum(dim=-1)
+        eat_ghost_count = eaten.to(torch.int64).sum(dim=-1)
 
         pac_reward = torch.zeros((b,), device=dev, dtype=torch.float32)
         pac_reward = pac_reward + pellet_eaten.to(torch.float32) * self.cfg.reward_pellet
         pac_reward = pac_reward + power_eaten.to(torch.float32) * self.cfg.reward_power
-        pac_reward = pac_reward + eat_ghost_count * self.cfg.reward_eat_ghost
+        pac_reward = pac_reward + eat_ghost_count.to(torch.float32) * self.cfg.reward_eat_ghost
         pac_reward = pac_reward + pac_dead.to(torch.float32) * self.cfg.reward_death
         pac_reward = pac_reward + torch.full((b,), self.cfg.reward_step, device=dev, dtype=torch.float32)
         pac_reward = pac_reward + bump_pac.to(torch.float32) * self.cfg.reward_wall_bump
 
         catch = pac_dead.to(torch.float32) * self.cfg.ghost_reward_catch
-        eaten_penalty = eat_ghost_count * self.cfg.ghost_reward_eaten
+        eaten_penalty = eat_ghost_count.to(torch.float32) * self.cfg.ghost_reward_eaten
         step_penalty = torch.full((b,), self.cfg.ghost_reward_step, device=dev, dtype=torch.float32)
         bump_penalty = bump_ghost.to(torch.float32).mean(dim=-1) * self.cfg.ghost_reward_wall_bump
         team_reward = catch + eaten_penalty + step_penalty + bump_penalty
@@ -319,7 +339,19 @@ class TorchPacmanEnv:
         ghost_reward = team_reward[:, None].repeat(1, self.GMAX) * self.ghost_present.to(torch.float32)
 
         pac_obs, ghost_obs = self._build_obs()
-        return StepOutput(pac_obs=pac_obs, ghost_obs=ghost_obs, pac_reward=pac_reward, ghost_reward=ghost_reward, done=done)
+        return StepOutput(
+            pac_obs=pac_obs,
+            ghost_obs=ghost_obs,
+            pac_reward=pac_reward,
+            ghost_reward=ghost_reward,
+            done=done,
+            pellet_eaten=pellet_eaten,
+            power_eaten=power_eaten,
+            ghosts_eaten=eat_ghost_count,
+            pac_dead=pac_dead,
+            all_pellets_done=all_pellets_done,
+            timeout=timeout,
+        )
 
     def get_obs(self) -> tuple[torch.Tensor, torch.Tensor]:
         return self._build_obs()
