@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from pacman_rl.rl import RolloutBatch, compute_gae, ppo_update
 from pacman_rl.rl.snapshot_pool import SnapshotPool
 from pacman_rl.telemetry import GameRecordConfig, TelemetryBuffer, record_game, write_telemetry_xlsx
 from pacman_rl.telemetry.gif import render_game_gif
+from pacman_rl.telemetry.postgres import PostgresLogger
 from pacman_rl.telemetry.telegram import (
     TelegramRateLimitError,
     send_document,
@@ -45,6 +47,8 @@ class TrainConfig:
     telegram_status_every_episodes: int
     telegram_sleep_s: float
     telegram_send_recordings: bool
+    postgres: bool
+    postgres_url_env: str
 
 
 @dataclass
@@ -389,6 +393,8 @@ def main() -> None:
     parser.add_argument("--telegram-status-every-episodes", type=int, default=50)
     parser.add_argument("--telegram-sleep-s", type=float, default=0.5)
     parser.add_argument("--telegram-send-recordings", action="store_true")
+    parser.add_argument("--postgres", action="store_true")
+    parser.add_argument("--postgres-url-env", type=str, default="DATABASE_URL")
 
     args = parser.parse_args()
 
@@ -410,6 +416,8 @@ def main() -> None:
         telegram_status_every_episodes=args.telegram_status_every_episodes,
         telegram_sleep_s=float(args.telegram_sleep_s),
         telegram_send_recordings=bool(args.telegram_send_recordings),
+        postgres=bool(args.postgres),
+        postgres_url_env=str(args.postgres_url_env),
     )
 
     if cfg.device == "auto":
@@ -461,6 +469,29 @@ def main() -> None:
     telemetry = TelemetryBuffer()
     episode_acc = EpisodeAccumulator(batch_size=cfg.batch_size, device=device)
     episode_history: list[dict[str, Any]] = []
+    pg = None
+    run_uuid = uuid.uuid4().hex
+    if cfg.postgres:
+        try:
+            pg = PostgresLogger.from_env(url_env=cfg.postgres_url_env)
+        except Exception as e:
+            print("postgres_init_failed=" + str(e))
+            pg = None
+    if pg is not None:
+        try:
+            run_uuid = pg.run_uuid
+            pg.log_run_start(
+                meta={
+                    "run_dir": str(cfg.run_dir),
+                    "device": str(device),
+                    "batch_size": int(cfg.batch_size),
+                    "updates": int(cfg.updates),
+                    "layouts": [l.name for l in chosen_layouts],
+                }
+            )
+        except Exception as e:
+            print("postgres_run_failed=" + str(e))
+            pg = None
 
     telegram_target = None
     if cfg.telegram:
@@ -507,6 +538,16 @@ def main() -> None:
         ep = _episode_means(episode_acc.totals)
         if episode_acc.episode_rows:
             episode_history.extend(episode_acc.episode_rows)
+            if pg is not None:
+                try:
+                    rows = list(episode_acc.episode_rows)
+                    for r in rows:
+                        li = int(r.get("layout_idx", -1))
+                        if 0 <= li < len(chosen_layouts):
+                            r["layout"] = chosen_layouts[li].name
+                    pg.log_episodes(rows=rows)
+                except Exception as e:
+                    print("postgres_log_failed=" + str(e))
             episode_acc.episode_rows = []
         total_episodes = int(len(episode_history))
         telemetry.add(
@@ -638,6 +679,11 @@ def main() -> None:
         ghosts_model=ghosts,
         ghosts_opt=ghosts_opt,
     )
+    if pg is not None:
+        try:
+            pg.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

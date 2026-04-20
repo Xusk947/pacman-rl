@@ -30,9 +30,30 @@ Then run with `--telegram`:
 python -m pacman_rl.train --layout-dir layouts --device auto --telegram
 ```
 
-The trainer sends a “training started” message and a final summary message. Every `--report-every` updates it also sends `game.gif`, `rewards.png`, `telemetry.xlsx`, `game.json`, and the checkpoint file.
+Telegram sends periodic status and artifacts (see `--report-every`, `--telegram-send-recordings`).
 
 Demo recording can be capped via `--record-max-steps` and it will stop early if the game is idle for too long (`--record-idle-steps`).
+
+## Postgres (Neon) logging
+
+You can stream episode-level telemetry into Postgres (e.g. Neon) using a connection string (`postgresql://...`).
+
+1. Install a Postgres driver:
+
+```bash
+pip install psycopg[binary]
+```
+
+2. Provide the connection string as a secret or environment variable:
+
+- Local: set `DATABASE_URL` in `.env`
+- Kaggle: add a secret named `DATABASE_URL` in the Notebook "Secrets" UI
+
+3. Run with:
+
+```bash
+python -m pacman_rl.train --layout-dir layouts --device auto --postgres --postgres-url-env DATABASE_URL
+```
 
 ## Project layout
 
