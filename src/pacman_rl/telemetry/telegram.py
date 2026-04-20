@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
 import uuid
@@ -8,12 +9,20 @@ from pathlib import Path
 from typing import Any
 from urllib import parse
 from urllib import request
+from urllib.error import HTTPError
 
 
 @dataclass(frozen=True)
 class TelegramTarget:
     bot_token: str
     chat_id: str
+
+
+class TelegramRateLimitError(RuntimeError):
+    def __init__(self, *, retry_after_s: int, payload: dict[str, Any] | None = None) -> None:
+        super().__init__(f"telegram_rate_limited retry_after_s={retry_after_s}")
+        self.retry_after_s = int(retry_after_s)
+        self.payload = payload
 
 
 def telegram_target_from_env(*, bot_token_env: str, chat_id_env: str) -> TelegramTarget:
@@ -26,6 +35,31 @@ def telegram_target_from_env(*, bot_token_env: str, chat_id_env: str) -> Telegra
     return TelegramTarget(bot_token=bot_token, chat_id=chat_id)
 
 
+def _handle_http_error(e: HTTPError) -> None:
+    if e.code != 429:
+        raise
+    try:
+        raw = e.read()
+        payload = json.loads(raw.decode("utf-8", errors="replace")) if raw else None
+    except Exception:
+        payload = None
+
+    retry_after = None
+    if isinstance(payload, dict):
+        params = payload.get("parameters")
+        if isinstance(params, dict) and "retry_after" in params:
+            retry_after = int(params["retry_after"])
+        else:
+            desc = payload.get("description", "")
+            if isinstance(desc, str) and "retry after" in desc:
+                try:
+                    retry_after = int(desc.split("retry after", 1)[1].strip().split()[0])
+                except Exception:
+                    retry_after = None
+
+    raise TelegramRateLimitError(retry_after_s=retry_after or 3, payload=payload)
+
+
 def send_message(*, target: TelegramTarget, text: str, timeout_s: int = 30) -> dict[str, Any]:
     url = f"https://api.telegram.org/bot{target.bot_token}/sendMessage"
     body = parse.urlencode({"chat_id": target.chat_id, "text": text}).encode("utf-8")
@@ -34,8 +68,11 @@ def send_message(*, target: TelegramTarget, text: str, timeout_s: int = 30) -> d
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     req.add_header("Content-Length", str(len(body)))
 
-    with request.urlopen(req, timeout=timeout_s) as resp:
-        data = resp.read()
+    try:
+        with request.urlopen(req, timeout=timeout_s) as resp:
+            data = resp.read()
+    except HTTPError as e:
+        _handle_http_error(e)
     return {"status": "ok", "bytes": len(data)}
 
 
@@ -83,6 +120,47 @@ def send_document(
     req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
     req.add_header("Content-Length", str(len(body)))
 
-    with request.urlopen(req, timeout=timeout_s) as resp:
-        data = resp.read()
+    try:
+        with request.urlopen(req, timeout=timeout_s) as resp:
+            data = resp.read()
+    except HTTPError as e:
+        _handle_http_error(e)
+    return {"status": "ok", "bytes": len(data)}
+
+
+def send_media_group(
+    *,
+    target: TelegramTarget,
+    file_paths: list[Path],
+    timeout_s: int = 120,
+) -> dict[str, Any]:
+    if not file_paths:
+        return {"status": "ok", "bytes": 0}
+    if len(file_paths) > 10:
+        raise ValueError("send_media_group supports up to 10 files per request")
+
+    url = f"https://api.telegram.org/bot{target.bot_token}/sendMediaGroup"
+
+    media: list[dict[str, Any]] = []
+    files: dict[str, tuple[str, bytes, str]] = {}
+    for i, p in enumerate(file_paths):
+        field = f"file{i}"
+        content_type = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
+        files[field] = (p.name, p.read_bytes(), content_type)
+        media.append({"type": "document", "media": f"attach://{field}"})
+
+    body, boundary = _encode_multipart(
+        fields={"chat_id": target.chat_id, "media": json.dumps(media)},
+        files=files,
+    )
+
+    req = request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    req.add_header("Content-Length", str(len(body)))
+
+    try:
+        with request.urlopen(req, timeout=timeout_s) as resp:
+            data = resp.read()
+    except HTTPError as e:
+        _handle_http_error(e)
     return {"status": "ok", "bytes": len(data)}

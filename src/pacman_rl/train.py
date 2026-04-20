@@ -17,7 +17,13 @@ from pacman_rl.rl import RolloutBatch, compute_gae, ppo_update
 from pacman_rl.rl.snapshot_pool import SnapshotPool
 from pacman_rl.telemetry import GameRecordConfig, TelemetryBuffer, record_game, write_telemetry_xlsx
 from pacman_rl.telemetry.gif import render_game_gif
-from pacman_rl.telemetry.telegram import send_document, send_message, telegram_target_from_env
+from pacman_rl.telemetry.telegram import (
+    TelegramRateLimitError,
+    send_document,
+    send_media_group,
+    send_message,
+    telegram_target_from_env,
+)
 from pacman_rl.utils import load_checkpoint, load_dotenv, resolve_device, save_checkpoint, save_model_weights
 from pacman_rl.utils.device import cuda_compatibility
 
@@ -133,6 +139,12 @@ def _maybe_send_file(
         except Exception:
             pass
         return False
+    for _ in range(3):
+        try:
+            send_document(target=target, file_path=file_path, caption=caption)
+            return True
+        except TelegramRateLimitError as e:
+            time.sleep(float(e.retry_after_s) + 0.5)
     send_document(target=target, file_path=file_path, caption=caption)
     return True
 
@@ -535,6 +547,7 @@ def main() -> None:
 
                 if cfg.telegram_send_recordings:
                     demo_cfg = GameRecordConfig(max_steps=cfg.record_max_steps, idle_steps=cfg.record_idle_steps)
+                    gif_paths: list[Path] = []
                     for lay in chosen_layouts:
                         game_path = report_dir / f"game_{lay.name}_{report_episodes}.json"
                         gif_path = report_dir / f"game_{lay.name}_{report_episodes}.gif"
@@ -549,10 +562,20 @@ def main() -> None:
                                 cfg=demo_cfg,
                             )
                             render_game_gif(game_path, gif_path)
-                            _maybe_send_file(target=telegram_target, file_path=gif_path, caption="")
-                            time.sleep(cfg.telegram_sleep_s)
+                            if gif_path.exists():
+                                gif_paths.append(gif_path)
                         except Exception as e:
                             print("demo_send_failed=" + str(e))
+                    if gif_paths:
+                        for i in range(0, len(gif_paths), 10):
+                            batch = gif_paths[i : i + 10]
+                            for _ in range(3):
+                                try:
+                                    send_media_group(target=telegram_target, file_paths=batch)
+                                    break
+                                except TelegramRateLimitError as e:
+                                    time.sleep(float(e.retry_after_s) + 0.5)
+                            time.sleep(cfg.telegram_sleep_s)
 
                 _maybe_send_file(target=telegram_target, file_path=xlsx_path, caption="")
                 time.sleep(cfg.telegram_sleep_s)
