@@ -11,13 +11,12 @@ from torch.distributions import Categorical
 
 from pacman_rl.config import EnvConfig, PPOConfig, SelfPlayConfig
 from pacman_rl.env import TorchPacmanEnv
-from pacman_rl.layouts import group_layouts_by_size, load_layouts_from_dir
+from pacman_rl.layouts import load_layouts_from_dir
 from pacman_rl.models import CNNActorCritic
 from pacman_rl.rl import RolloutBatch, compute_gae, ppo_update
 from pacman_rl.rl.snapshot_pool import SnapshotPool
 from pacman_rl.telemetry import GameRecordConfig, TelemetryBuffer, record_game, write_telemetry_xlsx
 from pacman_rl.telemetry.gif import render_game_gif
-from pacman_rl.telemetry.plot_png import render_rewards_png
 from pacman_rl.telemetry.telegram import send_document, send_message, telegram_target_from_env
 from pacman_rl.utils import load_checkpoint, load_dotenv, resolve_device, save_checkpoint, save_model_weights
 
@@ -36,6 +35,9 @@ class TrainConfig:
     chat_id_env: str
     record_max_steps: int
     record_idle_steps: int
+    telegram_status_every_episodes: int
+    telegram_sleep_s: float
+    telegram_send_recordings: bool
 
 
 @dataclass
@@ -111,86 +113,6 @@ def _episode_means(s: EpisodeStats) -> dict[str, float]:
     }
 
 
-def _mean(values: list[float]) -> float:
-    if not values:
-        return 0.0
-    return float(sum(values) / len(values))
-
-
-def _format_duration(seconds: float) -> str:
-    s = int(seconds)
-    h = s // 3600
-    s -= h * 3600
-    m = s // 60
-    s -= m * 60
-    if h > 0:
-        return f"{h}h{m:02d}m{s:02d}s"
-    if m > 0:
-        return f"{m}m{s:02d}s"
-    return f"{s}s"
-
-
-def _report_caption(*, update: int, rows: list[dict[str, Any]], elapsed_s: float) -> str:
-    pac = _mean([float(r.get("pacman_reward_mean", 0.0)) for r in rows])
-    ghosts = _mean([float(r.get("ghosts_reward_mean", 0.0)) for r in rows])
-    return (
-        "pacman-rl"
-        + " update="
-        + str(update)
-        + " mean_reward(pac="
-        + f"{pac:.3f}"
-        + " ghosts="
-        + f"{ghosts:.3f}"
-        + ") elapsed="
-        + _format_duration(elapsed_s)
-    )
-
-
-def _final_summary_text(
-    *,
-    start_update: int,
-    total_updates: int,
-    rows: list[dict[str, Any]],
-    elapsed_s: float,
-    batch_size: int,
-    rollout_steps: int,
-) -> str:
-    pac_values = [float(r.get("pacman_reward_mean", 0.0)) for r in rows]
-    ghost_values = [float(r.get("ghosts_reward_mean", 0.0)) for r in rows]
-    pac_last = pac_values[-1] if pac_values else 0.0
-    ghost_last = ghost_values[-1] if ghost_values else 0.0
-    pac_best = max(pac_values) if pac_values else 0.0
-    ghost_best = max(ghost_values) if ghost_values else 0.0
-
-    updates_done = max(0, total_updates - start_update)
-    total_env_steps = updates_done * rollout_steps * batch_size
-
-    return (
-        "Training finished\n"
-        + "updates="
-        + str(total_updates)
-        + " (start="
-        + str(start_update)
-        + ")\n"
-        + "elapsed="
-        + _format_duration(elapsed_s)
-        + "\n"
-        + "env_steps≈"
-        + str(total_env_steps)
-        + "\n"
-        + "last_reward(pac="
-        + f"{pac_last:.3f}"
-        + " ghosts="
-        + f"{ghost_last:.3f}"
-        + ")\n"
-        + "best_reward(pac="
-        + f"{pac_best:.3f}"
-        + " ghosts="
-        + f"{ghost_best:.3f}"
-        + ")"
-    )
-
-
 def _maybe_send_file(
     *,
     target: Any,
@@ -216,14 +138,10 @@ def _maybe_send_file(
 
 def _choose_layout_group(layout_dir: Path) -> list:
     layouts = load_layouts_from_dir(layout_dir)
-    groups = group_layouts_by_size(layouts)
-
-    sizes = sorted(groups.keys(), key=lambda x: (x[0] * x[1], x[0], x[1]))
-    chosen_size = sizes[-1]
-    chosen = groups[chosen_size]
-
-    print(f"Using {len(chosen)} layouts with size H={chosen_size[0]} W={chosen_size[1]}")
-    return chosen
+    h = max(l.height for l in layouts)
+    w = max(l.width for l in layouts)
+    print(f"Using {len(layouts)} layouts (max size H={h} W={w})")
+    return layouts
 
 
 def _build_env(layouts: list, *, batch_size: int, device: torch.device, env_cfg: EnvConfig) -> TorchPacmanEnv:
@@ -410,12 +328,15 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--updates", type=int, default=200)
     parser.add_argument("--resume", type=Path, default=None)
-    parser.add_argument("--report-every", type=int, default=50)
+    parser.add_argument("--report-every", type=int, default=100)
     parser.add_argument("--telegram", action="store_true")
     parser.add_argument("--bot-token-env", type=str, default="BOT_TOKEN")
     parser.add_argument("--chat-id-env", type=str, default="CHAT_ID")
     parser.add_argument("--record-max-steps", type=int, default=512)
     parser.add_argument("--record-idle-steps", type=int, default=120)
+    parser.add_argument("--telegram-status-every-episodes", type=int, default=50)
+    parser.add_argument("--telegram-sleep-s", type=float, default=0.5)
+    parser.add_argument("--telegram-send-recordings", action="store_true")
 
     args = parser.parse_args()
 
@@ -434,6 +355,9 @@ def main() -> None:
         chat_id_env=args.chat_id_env,
         record_max_steps=args.record_max_steps,
         record_idle_steps=args.record_idle_steps,
+        telegram_status_every_episodes=args.telegram_status_every_episodes,
+        telegram_sleep_s=float(args.telegram_sleep_s),
+        telegram_send_recordings=bool(args.telegram_send_recordings),
     )
 
     if cfg.device == "auto":
@@ -490,31 +414,9 @@ def main() -> None:
             telegram_target = None
 
     train_start_s = time.time()
-    if telegram_target is not None:
-        try:
-            send_message(
-                target=telegram_target,
-                text=(
-                    "Training started\n"
-                    + "run_dir="
-                    + str(cfg.run_dir)
-                    + "\n"
-                    + "device="
-                    + str(device)
-                    + "\n"
-                    + "batch_size="
-                    + str(cfg.batch_size)
-                    + " updates="
-                    + str(cfg.updates)
-                    + " start_update="
-                    + str(start_update)
-                    + "\n"
-                    + "layouts="
-                    + str(len(chosen_layouts))
-                ),
-            )
-        except Exception as e:
-            print("telegram_send_failed=" + str(e))
+    total_episodes = 0
+    last_status_sent = 0
+    last_report_sent = 0
 
     for update in range(start_update, cfg.updates):
         update_start_s = time.time()
@@ -546,6 +448,7 @@ def main() -> None:
         steps_per_update = cfg.batch_size * ppo_cfg.rollout_steps * 2
         step = int((update + 1) * steps_per_update)
         ep = _episode_means(episode_acc.totals)
+        total_episodes += int(episode_acc.totals.episodes)
         telemetry.add(
             {
                 "update": update + 1,
@@ -575,6 +478,15 @@ def main() -> None:
             }
         )
 
+        if telegram_target is not None and cfg.telegram_status_every_episodes > 0:
+            status_to_send = (total_episodes // cfg.telegram_status_every_episodes) * cfg.telegram_status_every_episodes
+            if status_to_send > last_status_sent:
+                try:
+                    send_message(target=telegram_target, text=f"episodes={status_to_send}")
+                except Exception as e:
+                    print("telegram_send_failed=" + str(e))
+                last_status_sent = status_to_send
+
         if (update + 1) % 10 == 0:
             print(
                 "update="
@@ -589,99 +501,58 @@ def main() -> None:
                 + f"{ghost_stats.approx_kl:.6f}"
             )
 
-        if cfg.report_every > 0 and (update + 1) % cfg.report_every == 0:
-            ckpt_path = cfg.run_dir / "checkpoints" / f"update_{update + 1}.pt"
-            save_checkpoint(
-                ckpt_path,
-                update=update + 1,
-                pacman_model=pacman,
-                pacman_opt=pacman_opt,
-                ghosts_model=ghosts,
-                ghosts_opt=ghosts_opt,
-            )
+        if telegram_target is not None and cfg.report_every > 0:
+            report_to_send = (total_episodes // cfg.report_every) * cfg.report_every
+            if report_to_send > last_report_sent:
+                report_episodes = report_to_send
+                last_report_sent = report_to_send
 
-            report_dir = cfg.run_dir / "reports" / f"update_{update + 1}"
-            xlsx_path = report_dir / "telemetry.xlsx"
-            game_path = report_dir / "game.json"
-            gif_path = report_dir / "game.gif"
-            plot_path = report_dir / "rewards.png"
-            weights_path = report_dir / "weights.pt"
+                ckpt_path = cfg.run_dir / "checkpoints" / f"episodes_{report_episodes}.pt"
+                save_checkpoint(
+                    ckpt_path,
+                    update=update + 1,
+                    pacman_model=pacman,
+                    pacman_opt=pacman_opt,
+                    ghosts_model=ghosts,
+                    ghosts_opt=ghosts_opt,
+                )
 
-            rows = telemetry.to_rows()
-            write_telemetry_xlsx(xlsx_path, rows=rows)
-            try:
-                render_rewards_png(plot_path, rows=rows)
-            except Exception as e:
-                print("plot_render_failed=" + str(e))
-            try:
-                save_model_weights(weights_path, update=update + 1, pacman_model=pacman, ghosts_model=ghosts)
-            except Exception as e:
-                print("weights_save_failed=" + str(e))
+                report_dir = cfg.run_dir / "reports" / f"episodes_{report_episodes}"
+                xlsx_path = report_dir / f"telemetry_{report_episodes}.xlsx"
+                weights_path = report_dir / f"weights_{report_episodes}.pt"
 
-            demo_cfg = GameRecordConfig(max_steps=cfg.record_max_steps, idle_steps=cfg.record_idle_steps)
-            demo_count = min(4, len(chosen_layouts))
-            demo_idx = torch.randperm(len(chosen_layouts), generator=rng)[:demo_count].tolist()
-
-            best_summary = None
-            best_game = None
-            best_gif = None
-            for i in demo_idx:
-                lay = chosen_layouts[int(i)]
-                cand_game = report_dir / f"game_{lay.name}.json"
-                cand_gif = report_dir / f"game_{lay.name}.gif"
+                rows = telemetry.to_rows()
+                write_telemetry_xlsx(xlsx_path, rows=rows)
                 try:
-                    summary = record_game(
-                        cand_game,
-                        layout=lay,
-                        pacman=pacman,
-                        ghosts=ghosts,
-                        device=device,
-                        env_cfg=env_cfg,
-                        cfg=demo_cfg,
-                    )
-                    try:
-                        render_game_gif(cand_game, cand_gif)
-                    except Exception as e:
-                        print("gif_render_failed=" + str(e))
-
-                    if best_summary is None:
-                        best_summary = summary
-                        best_game = cand_game
-                        best_gif = cand_gif if cand_gif.exists() else None
-                    else:
-                        better = False
-                        if int(summary.get("pellets_eaten", 0)) > int(best_summary.get("pellets_eaten", 0)):
-                            better = True
-                        elif int(summary.get("pellets_eaten", 0)) == int(best_summary.get("pellets_eaten", 0)):
-                            if float(summary.get("total_pac_reward", 0.0)) > float(best_summary.get("total_pac_reward", 0.0)):
-                                better = True
-                        if better:
-                            best_summary = summary
-                            best_game = cand_game
-                            best_gif = cand_gif if cand_gif.exists() else None
+                    save_model_weights(weights_path, update=update + 1, pacman_model=pacman, ghosts_model=ghosts)
                 except Exception as e:
-                    print("game_record_failed=" + str(e))
+                    print("weights_save_failed=" + str(e))
 
-            if best_game is not None:
-                try:
-                    report_dir.mkdir(parents=True, exist_ok=True)
-                    game_path.write_bytes(best_game.read_bytes())
-                    if best_gif is not None and best_gif.exists():
-                        gif_path.write_bytes(best_gif.read_bytes())
-                except Exception as e:
-                    print("best_demo_write_failed=" + str(e))
+                if cfg.telegram_send_recordings:
+                    demo_cfg = GameRecordConfig(max_steps=cfg.record_max_steps, idle_steps=cfg.record_idle_steps)
+                    for lay in chosen_layouts:
+                        game_path = report_dir / f"game_{lay.name}_{report_episodes}.json"
+                        gif_path = report_dir / f"game_{lay.name}_{report_episodes}.gif"
+                        try:
+                            record_game(
+                                game_path,
+                                layout=lay,
+                                pacman=pacman,
+                                ghosts=ghosts,
+                                device=device,
+                                env_cfg=env_cfg,
+                                cfg=demo_cfg,
+                            )
+                            render_game_gif(game_path, gif_path)
+                            _maybe_send_file(target=telegram_target, file_path=gif_path, caption="")
+                            time.sleep(cfg.telegram_sleep_s)
+                        except Exception as e:
+                            print("demo_send_failed=" + str(e))
 
-            if telegram_target is not None:
-                try:
-                    window = rows[-cfg.report_every :] if cfg.report_every > 0 else rows
-                    caption = _report_caption(update=update + 1, rows=window, elapsed_s=time.time() - train_start_s)
-                    _maybe_send_file(target=telegram_target, file_path=gif_path, caption=caption)
-                    _maybe_send_file(target=telegram_target, file_path=plot_path, caption=caption)
-                    _maybe_send_file(target=telegram_target, file_path=xlsx_path, caption=caption)
-                    _maybe_send_file(target=telegram_target, file_path=game_path, caption=caption)
-                    _maybe_send_file(target=telegram_target, file_path=weights_path, caption=caption)
-                except Exception as e:
-                    print("telegram_send_failed=" + str(e))
+                _maybe_send_file(target=telegram_target, file_path=xlsx_path, caption="")
+                time.sleep(cfg.telegram_sleep_s)
+                _maybe_send_file(target=telegram_target, file_path=weights_path, caption="")
+                time.sleep(cfg.telegram_sleep_s)
 
     save_checkpoint(
         cfg.run_dir / "checkpoints" / f"final_update_{cfg.updates}.pt",
@@ -691,21 +562,6 @@ def main() -> None:
         ghosts_model=ghosts,
         ghosts_opt=ghosts_opt,
     )
-    if telegram_target is not None:
-        try:
-            send_message(
-                target=telegram_target,
-                text=_final_summary_text(
-                    start_update=start_update,
-                    total_updates=cfg.updates,
-                    rows=telemetry.to_rows(),
-                    elapsed_s=time.time() - train_start_s,
-                    batch_size=cfg.batch_size,
-                    rollout_steps=ppo_cfg.rollout_steps,
-                ),
-            )
-        except Exception as e:
-            print("telegram_send_failed=" + str(e))
 
 
 if __name__ == "__main__":

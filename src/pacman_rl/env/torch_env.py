@@ -87,9 +87,8 @@ class TorchPacmanEnv:
         if not layouts:
             raise ValueError("layouts must be non-empty")
 
-        h0, w0 = layouts[0].height, layouts[0].width
-        if any(l.height != h0 or l.width != w0 for l in layouts):
-            raise ValueError("all layouts in a single TorchPacmanEnv must have the same (H, W)")
+        h0 = max(l.height for l in layouts)
+        w0 = max(l.width for l in layouts)
 
         self.device = device
         self.cfg = cfg
@@ -104,7 +103,7 @@ class TorchPacmanEnv:
         h, w = self.height, self.width
         l = len(layouts)
 
-        walls = torch.zeros((l, h, w), dtype=torch.bool)
+        walls = torch.ones((l, h, w), dtype=torch.bool)
         pellets = torch.zeros((l, h, w), dtype=torch.bool)
         power = torch.zeros((l, h, w), dtype=torch.bool)
         pac_spawn = torch.zeros((l, 2), dtype=torch.int64)
@@ -126,8 +125,12 @@ class TorchPacmanEnv:
                         walls[i, r, c] = True
                     elif ch == ".":
                         pellets[i, r, c] = True
+                        walls[i, r, c] = False
                     elif ch == "o":
                         power[i, r, c] = True
+                        walls[i, r, c] = False
+                    else:
+                        walls[i, r, c] = False
 
         self._bank_walls = walls.to(self.device)
         self._bank_pellets = pellets.to(self.device)

@@ -25,16 +25,13 @@ class CNNActorCritic(nn.Module):
             nn.ReLU(),
         )
 
-        self.head = nn.Sequential(
-            nn.Flatten(),
-            nn.LazyLinear(256),
-            nn.ReLU(),
-        )
+        self.head = nn.Sequential(nn.Linear(64, 256), nn.ReLU())
 
         self.pi = nn.Linear(256, actions)
         self.v = nn.Linear(256, 1)
 
     def forward(self, obs: torch.Tensor) -> ActorCriticOutput:
         x = self.backbone(obs)
+        x = x.mean(dim=(2, 3))
         x = self.head(x)
         return ActorCriticOutput(logits=self.pi(x), value=self.v(x).squeeze(-1))
