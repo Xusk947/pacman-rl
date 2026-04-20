@@ -15,6 +15,7 @@ class StepOutput:
     pac_reward: torch.Tensor
     ghost_reward: torch.Tensor
     done: torch.Tensor
+    layout_idx: torch.Tensor
     pellet_eaten: torch.Tensor
     power_eaten: torch.Tensor
     ghosts_eaten: torch.Tensor
@@ -174,6 +175,7 @@ class TorchPacmanEnv:
             pac_reward=zeros_b,
             ghost_reward=zeros_bg,
             done=done,
+            layout_idx=layout_idx.clone(),
             pellet_eaten=zeros_b_bool,
             power_eaten=zeros_b_bool,
             ghosts_eaten=zeros_b_i64,
@@ -348,6 +350,7 @@ class TorchPacmanEnv:
             pac_reward=pac_reward,
             ghost_reward=ghost_reward,
             done=done,
+            layout_idx=self._layout_idx.clone(),
             pellet_eaten=pellet_eaten,
             power_eaten=power_eaten,
             ghosts_eaten=eat_ghost_count,

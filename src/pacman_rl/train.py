@@ -65,13 +65,22 @@ class EpisodeAccumulator:
         self._power = torch.zeros((batch_size,), device=device, dtype=torch.int64)
         self._ghosts = torch.zeros((batch_size,), device=device, dtype=torch.int64)
         self._steps = torch.zeros((batch_size,), device=device, dtype=torch.int64)
+        self._pac_reward = torch.zeros((batch_size,), device=device, dtype=torch.float32)
+        self._ghost_reward = torch.zeros((batch_size,), device=device, dtype=torch.float32)
+        self._layout_idx0 = torch.zeros((batch_size,), device=device, dtype=torch.int64)
 
         self.totals = EpisodeStats()
+        self.episode_rows: list[dict[str, Any]] = []
+        self._next_episode_id = 1
 
     def observe(self, out: Any) -> None:
+        if hasattr(out, "layout_idx"):
+            self._layout_idx0 = torch.where(self._steps == 0, out.layout_idx.to(torch.int64), self._layout_idx0)
         self._pellets += out.pellet_eaten.to(torch.int64)
         self._power += out.power_eaten.to(torch.int64)
         self._ghosts += out.ghosts_eaten.to(torch.int64)
+        self._pac_reward += out.pac_reward.to(torch.float32)
+        self._ghost_reward += out.ghost_reward.max(dim=-1).values.to(torch.float32)
         self._steps += 1
 
         done = out.done
@@ -79,6 +88,34 @@ class EpisodeAccumulator:
             return
 
         idx = done.nonzero(as_tuple=False).squeeze(-1)
+
+        ended_by = []
+        for i in idx.tolist():
+            if bool(out.all_pellets_done[i].item()):
+                ended_by.append("win")
+            elif bool(out.pac_dead[i].item()):
+                ended_by.append("death")
+            elif bool(out.timeout[i].item()):
+                ended_by.append("timeout")
+            else:
+                ended_by.append("done")
+
+        for j, b in enumerate(idx.tolist()):
+            self.episode_rows.append(
+                {
+                    "episode_id": int(self._next_episode_id),
+                    "layout_idx": int(self._layout_idx0[b].item()),
+                    "steps": int(self._steps[b].item()),
+                    "pacman_reward": float(self._pac_reward[b].item()),
+                    "ghosts_reward": float(self._ghost_reward[b].item()),
+                    "pellets_eaten": int(self._pellets[b].item()),
+                    "power_eaten": int(self._power[b].item()),
+                    "ghosts_eaten": int(self._ghosts[b].item()),
+                    "ended_by": ended_by[j],
+                }
+            )
+            self._next_episode_id += 1
+
         self.totals.episodes += int(idx.shape[0])
         self.totals.pellets += int(self._pellets[idx].sum().item())
         self.totals.power += int(self._power[idx].sum().item())
@@ -92,6 +129,8 @@ class EpisodeAccumulator:
         self._power[idx] = 0
         self._ghosts[idx] = 0
         self._steps[idx] = 0
+        self._pac_reward[idx] = 0
+        self._ghost_reward[idx] = 0
 
 
 def _episode_means(s: EpisodeStats) -> dict[str, float]:
@@ -421,6 +460,7 @@ def main() -> None:
     rng = torch.Generator(device="cpu")
     telemetry = TelemetryBuffer()
     episode_acc = EpisodeAccumulator(batch_size=cfg.batch_size, device=device)
+    episode_history: list[dict[str, Any]] = []
 
     telegram_target = None
     if cfg.telegram:
@@ -465,7 +505,10 @@ def main() -> None:
         steps_per_update = cfg.batch_size * ppo_cfg.rollout_steps * 2
         step = int((update + 1) * steps_per_update)
         ep = _episode_means(episode_acc.totals)
-        total_episodes += int(episode_acc.totals.episodes)
+        if episode_acc.episode_rows:
+            episode_history.extend(episode_acc.episode_rows)
+            episode_acc.episode_rows = []
+        total_episodes = int(len(episode_history))
         telemetry.add(
             {
                 "update": update + 1,
@@ -538,7 +581,12 @@ def main() -> None:
                 xlsx_path = report_dir / f"telemetry_{report_episodes}.xlsx"
                 weights_path = report_dir / f"weights_{report_episodes}.pt"
 
-                rows = telemetry.to_rows()
+                start_ep = max(0, report_episodes - cfg.report_every)
+                rows = episode_history[start_ep:report_episodes]
+                for r in rows:
+                    li = int(r.get("layout_idx", -1))
+                    if 0 <= li < len(chosen_layouts):
+                        r["layout"] = chosen_layouts[li].name
                 write_telemetry_xlsx(xlsx_path, rows=rows)
                 try:
                     save_model_weights(weights_path, update=update + 1, pacman_model=pacman, ghosts_model=ghosts)
