@@ -93,7 +93,7 @@ def _final_summary_text(
     total_env_steps = updates_done * rollout_steps * batch_size
 
     return (
-        "Обучение завершено\n"
+        "Training finished\n"
         + "updates="
         + str(total_updates)
         + " (start="
@@ -360,10 +360,10 @@ def main() -> None:
     if cfg.device == "auto":
         if torch.cuda.is_available():
             device = torch.device("cuda")
-            print("✅ Используем GPU 🚀")
+            print("✅ Using GPU 🚀")
         else:
             device = torch.device("cpu")
-            print("⚠️ GPU не найден, используем CPU 🧠")
+            print("⚠️ GPU not found, using CPU 🧠")
     else:
         device = resolve_device(cfg.device)
     env_cfg = EnvConfig()
@@ -415,7 +415,7 @@ def main() -> None:
             send_message(
                 target=telegram_target,
                 text=(
-                    "Обучение началось\n"
+                    "Training started\n"
                     + "run_dir="
                     + str(cfg.run_dir)
                     + "\n"
@@ -462,9 +462,12 @@ def main() -> None:
 
         update_time_s = time.time() - update_start_s
         elapsed_s = time.time() - train_start_s
+        steps_per_update = cfg.batch_size * ppo_cfg.rollout_steps * 2
+        step = int((update + 1) * steps_per_update)
         telemetry.add(
             {
                 "update": update + 1,
+                "step": step,
                 "pacman_reward_mean": float(pac_rew),
                 "ghosts_reward_mean": float(ghost_rew),
                 "update_time_s": float(update_time_s),

@@ -12,20 +12,23 @@ def render_rewards_png(path: Path, *, rows: list[dict[str, Any]], width: int = 1
 
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    updates: list[int] = []
+    steps: list[int] = []
     pac: list[float] = []
     ghosts: list[float] = []
     for r in rows:
-        if "update" not in r:
+        if "step" in r:
+            steps.append(int(r["step"]))
+        elif "update" in r:
+            steps.append(int(r["update"]))
+        else:
             continue
-        updates.append(int(r["update"]))
         pac.append(float(r.get("pacman_reward_mean", 0.0)))
         ghosts.append(float(r.get("ghosts_reward_mean", 0.0)))
 
     img = Image.new("RGB", (width, height), (16, 18, 22))
     d = ImageDraw.Draw(img)
 
-    if not updates:
+    if not steps:
         d.text((20, 20), "no data", fill=(230, 230, 230))
         img.save(path, format="PNG")
         return
@@ -46,8 +49,8 @@ def render_rewards_png(path: Path, *, rows: list[dict[str, Any]], width: int = 1
     y_min -= pad
     y_max += pad
 
-    x_min = updates[0]
-    x_max = updates[-1]
+    x_min = steps[0]
+    x_max = steps[-1]
     if x_min == x_max:
         x_max += 1
 
@@ -76,7 +79,7 @@ def render_rewards_png(path: Path, *, rows: list[dict[str, Any]], width: int = 1
     d.line((left, top, left, top + plot_h), fill=axis_color, width=2)
 
     def draw_series(values: list[float], *, color: tuple[int, int, int]) -> None:
-        pts = [(x_to_px(x), y_to_px(y)) for x, y in zip(updates, values)]
+        pts = [(x_to_px(x), y_to_px(y)) for x, y in zip(steps, values)]
         for i in range(1, len(pts)):
             d.line((pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]), fill=color, width=3)
 
@@ -87,12 +90,14 @@ def render_rewards_png(path: Path, *, rows: list[dict[str, Any]], width: int = 1
 
     legend_y = height - bottom + 18
     d.rectangle((left, legend_y, left + 18, legend_y + 18), fill=pac_color)
-    d.text((left + 26, legend_y + 1), "pacman_reward_mean", fill=(230, 230, 230))
+    d.text((left + 26, legend_y + 1), "Pacman", fill=(230, 230, 230))
 
     x2 = left + 300
     d.rectangle((x2, legend_y, x2 + 18, legend_y + 18), fill=ghost_color)
-    d.text((x2 + 26, legend_y + 1), "ghosts_reward_mean", fill=(230, 230, 230))
+    d.text((x2 + 26, legend_y + 1), "Ghosts", fill=(230, 230, 230))
 
-    d.text((left, 8), "Rewards", fill=(240, 240, 240))
+    d.text((left, 8), "Reward vs Step", fill=(240, 240, 240))
+    d.text((width // 2 - 20, height - 26), "step", fill=(210, 210, 210))
+    d.text((12, 8), "reward", fill=(210, 210, 210))
 
     img.save(path, format="PNG")
