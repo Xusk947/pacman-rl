@@ -8,6 +8,7 @@ def write_telemetry_xlsx(path: Path, *, rows: list[dict[str, Any]]) -> None:
     try:
         from openpyxl import Workbook
         from openpyxl.chart import LineChart, Reference
+        from openpyxl.chart.series import SeriesLabel
     except ModuleNotFoundError as e:
         raise ModuleNotFoundError("openpyxl is required to export telemetry to .xlsx") from e
 
@@ -62,7 +63,7 @@ def write_telemetry_xlsx(path: Path, *, rows: list[dict[str, Any]]) -> None:
             data = Reference(ws, min_col=col, min_row=min_row, max_row=max_row)
             chart.add_data(data, titles_from_data=True)
             if series_titles is not None and k in series_titles:
-                chart.series[-1].title = series_titles[k]
+                chart.series[-1].title = SeriesLabel(v=series_titles[k])
 
         ws.add_chart(chart, anchor)
 
