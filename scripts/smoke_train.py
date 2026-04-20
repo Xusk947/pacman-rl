@@ -17,13 +17,18 @@ def main() -> None:
         "--layout-dir",
         "layouts",
         "--device",
-        "cpu",
+        "cuda",
         "--batch-size",
         "32",
         "--updates",
         "2",
         "--run-dir",
         "runs/smoke",
+        "--telegram",
+        "--bot-token-env",
+        "--chat-id-env",
+        
+        
     ]
     print("Running:", " ".join(cmd))
     subprocess.check_call(cmd, env=env)
