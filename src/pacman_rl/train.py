@@ -617,19 +617,59 @@ def main() -> None:
                 save_model_weights(weights_path, update=update + 1, pacman_model=pacman, ghosts_model=ghosts)
             except Exception as e:
                 print("weights_save_failed=" + str(e))
-            record_game(
-                game_path,
-                layout=chosen_layouts[0],
-                pacman=pacman,
-                ghosts=ghosts,
-                device=device,
-                env_cfg=env_cfg,
-                cfg=GameRecordConfig(max_steps=cfg.record_max_steps, idle_steps=cfg.record_idle_steps),
-            )
-            try:
-                render_game_gif(game_path, gif_path)
-            except Exception as e:
-                print("gif_render_failed=" + str(e))
+
+            demo_cfg = GameRecordConfig(max_steps=cfg.record_max_steps, idle_steps=cfg.record_idle_steps)
+            demo_count = min(4, len(chosen_layouts))
+            demo_idx = torch.randperm(len(chosen_layouts), generator=rng)[:demo_count].tolist()
+
+            best_summary = None
+            best_game = None
+            best_gif = None
+            for i in demo_idx:
+                lay = chosen_layouts[int(i)]
+                cand_game = report_dir / f"game_{lay.name}.json"
+                cand_gif = report_dir / f"game_{lay.name}.gif"
+                try:
+                    summary = record_game(
+                        cand_game,
+                        layout=lay,
+                        pacman=pacman,
+                        ghosts=ghosts,
+                        device=device,
+                        env_cfg=env_cfg,
+                        cfg=demo_cfg,
+                    )
+                    try:
+                        render_game_gif(cand_game, cand_gif)
+                    except Exception as e:
+                        print("gif_render_failed=" + str(e))
+
+                    if best_summary is None:
+                        best_summary = summary
+                        best_game = cand_game
+                        best_gif = cand_gif if cand_gif.exists() else None
+                    else:
+                        better = False
+                        if int(summary.get("pellets_eaten", 0)) > int(best_summary.get("pellets_eaten", 0)):
+                            better = True
+                        elif int(summary.get("pellets_eaten", 0)) == int(best_summary.get("pellets_eaten", 0)):
+                            if float(summary.get("total_pac_reward", 0.0)) > float(best_summary.get("total_pac_reward", 0.0)):
+                                better = True
+                        if better:
+                            best_summary = summary
+                            best_game = cand_game
+                            best_gif = cand_gif if cand_gif.exists() else None
+                except Exception as e:
+                    print("game_record_failed=" + str(e))
+
+            if best_game is not None:
+                try:
+                    report_dir.mkdir(parents=True, exist_ok=True)
+                    game_path.write_bytes(best_game.read_bytes())
+                    if best_gif is not None and best_gif.exists():
+                        gif_path.write_bytes(best_gif.read_bytes())
+                except Exception as e:
+                    print("best_demo_write_failed=" + str(e))
 
             if telegram_target is not None:
                 try:
