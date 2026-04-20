@@ -52,8 +52,10 @@ pip install psycopg[binary]
 3. Run with:
 
 ```bash
-python -m pacman_rl.train --layout-dir layouts --device auto --postgres --postgres-url-env DATABASE_URL
+python -m pacman_rl.train --layout-dir layouts --device auto --postgres-url-env DATABASE_URL
 ```
+
+If you want to force-disable Postgres logging even when `DATABASE_URL` is set, use `--no-postgres`.
 
 ## Project layout
 

@@ -21,6 +21,10 @@ def _get_secret(name: str) -> str | None:
         return None
 
 
+def get_database_url(*, url_env: str = "DATABASE_URL") -> str | None:
+    return _get_secret(url_env)
+
+
 def _connect(database_url: str) -> Any:
     try:
         import psycopg
@@ -44,7 +48,7 @@ class PostgresLogger:
 
     @classmethod
     def from_env(cls, *, url_env: str = "DATABASE_URL") -> PostgresLogger | None:
-        url = _get_secret(url_env)
+        url = get_database_url(url_env=url_env)
         if not url:
             return None
         run_uuid = uuid.uuid4().hex

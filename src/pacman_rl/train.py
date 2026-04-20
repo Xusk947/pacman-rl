@@ -18,7 +18,7 @@ from pacman_rl.rl import RolloutBatch, compute_gae, ppo_update
 from pacman_rl.rl.snapshot_pool import SnapshotPool
 from pacman_rl.telemetry import GameRecordConfig, TelemetryBuffer, record_game, write_telemetry_xlsx
 from pacman_rl.telemetry.gif import render_game_gif
-from pacman_rl.telemetry.postgres import PostgresLogger
+from pacman_rl.telemetry.postgres import PostgresLogger, get_database_url
 from pacman_rl.telemetry.telegram import (
     TelegramRateLimitError,
     send_document,
@@ -49,6 +49,7 @@ class TrainConfig:
     telegram_send_recordings: bool
     recordings_every: int
     postgres: bool
+    postgres_disable: bool
     postgres_url_env: str
 
 
@@ -396,11 +397,15 @@ def main() -> None:
     parser.add_argument("--telegram-send-recordings", action="store_true")
     parser.add_argument("--recordings-every", type=int, default=0)
     parser.add_argument("--postgres", action="store_true")
+    parser.add_argument("--no-postgres", action="store_true")
     parser.add_argument("--postgres-url-env", type=str, default="DATABASE_URL")
 
     args = parser.parse_args()
 
     load_dotenv()
+
+    url_present = bool(get_database_url(url_env=str(args.postgres_url_env)))
+    postgres_enabled = (not bool(args.no_postgres)) and (bool(args.postgres) or url_present)
 
     cfg = TrainConfig(
         batch_size=args.batch_size,
@@ -419,7 +424,8 @@ def main() -> None:
         telegram_sleep_s=float(args.telegram_sleep_s),
         telegram_send_recordings=bool(args.telegram_send_recordings),
         recordings_every=int(args.recordings_every),
-        postgres=bool(args.postgres),
+        postgres=postgres_enabled,
+        postgres_disable=bool(args.no_postgres),
         postgres_url_env=str(args.postgres_url_env),
     )
 
@@ -474,7 +480,7 @@ def main() -> None:
     episode_history: list[dict[str, Any]] = []
     pg = None
     run_uuid = uuid.uuid4().hex
-    if cfg.postgres:
+    if cfg.postgres and not cfg.postgres_disable:
         try:
             pg = PostgresLogger.from_env(url_env=cfg.postgres_url_env)
         except Exception as e:
