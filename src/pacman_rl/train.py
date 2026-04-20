@@ -19,7 +19,7 @@ from pacman_rl.telemetry import GameRecordConfig, TelemetryBuffer, record_game, 
 from pacman_rl.telemetry.gif import render_game_gif
 from pacman_rl.telemetry.plot_png import render_rewards_png
 from pacman_rl.telemetry.telegram import send_document, send_message, telegram_target_from_env
-from pacman_rl.utils import load_checkpoint, load_dotenv, resolve_device, save_checkpoint
+from pacman_rl.utils import load_checkpoint, load_dotenv, resolve_device, save_checkpoint, save_model_weights
 
 
 @dataclass(frozen=True)
@@ -512,6 +512,7 @@ def main() -> None:
             game_path = report_dir / "game.json"
             gif_path = report_dir / "game.gif"
             plot_path = report_dir / "rewards.png"
+            weights_path = report_dir / "weights.pt"
 
             rows = telemetry.to_rows()
             write_telemetry_xlsx(xlsx_path, rows=rows)
@@ -519,6 +520,10 @@ def main() -> None:
                 render_rewards_png(plot_path, rows=rows)
             except Exception as e:
                 print("plot_render_failed=" + str(e))
+            try:
+                save_model_weights(weights_path, update=update + 1, pacman_model=pacman, ghosts_model=ghosts)
+            except Exception as e:
+                print("weights_save_failed=" + str(e))
             record_game(
                 game_path,
                 layout=chosen_layouts[0],
@@ -541,7 +546,7 @@ def main() -> None:
                     _maybe_send_file(target=telegram_target, file_path=plot_path, caption=caption)
                     _maybe_send_file(target=telegram_target, file_path=xlsx_path, caption=caption)
                     _maybe_send_file(target=telegram_target, file_path=game_path, caption=caption)
-                    _maybe_send_file(target=telegram_target, file_path=ckpt_path, caption=caption)
+                    _maybe_send_file(target=telegram_target, file_path=weights_path, caption=caption)
                 except Exception as e:
                     print("telegram_send_failed=" + str(e))
 

@@ -32,6 +32,22 @@ def save_checkpoint(
     torch.save(payload, path)
 
 
+def save_model_weights(
+    path: Path,
+    *,
+    update: int,
+    pacman_model: torch.nn.Module,
+    ghosts_model: torch.nn.Module,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "update": update,
+        "pacman": {"model": pacman_model.state_dict()},
+        "ghosts": {"model": ghosts_model.state_dict()},
+    }
+    torch.save(payload, path)
+
+
 def load_checkpoint(
     path: Path,
     *,
