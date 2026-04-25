@@ -44,7 +44,7 @@ def _collect_rollout(
     env: TorchPacmanEnv,
     model: SharedCNNActorCritic,
     cfg: PPOConfig,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
     t = int(cfg.rollout_steps)
     b = env.batch_size
     a = env.AGENTS
@@ -90,7 +90,9 @@ def _collect_rollout(
         last_flat = last_obs.reshape(b * a, c, h, w)
         last_values = model(last_flat).value.reshape(b, a)
 
-    return obs_buf, act_buf, logp_buf, val_buf, rew_buf, done_buf, last_values
+    pellets_eaten = int(info_acc[:, :, 0].sum().item())
+    power_eaten = int(info_acc[:, :, 1].sum().item())
+    return obs_buf, act_buf, logp_buf, val_buf, rew_buf, done_buf, last_values, pellets_eaten, power_eaten
 
 
 def main() -> None:
@@ -150,7 +152,9 @@ def main() -> None:
     train_start = time.time()
     for update in range(int(updates)):
         upd_start = time.time()
-        obs, actions, old_logp, values, rewards, dones, last_values = _collect_rollout(env=env, model=model, cfg=ppo_cfg)
+        obs, actions, old_logp, values, rewards, dones, last_values, pellets_eaten, power_eaten = _collect_rollout(
+            env=env, model=model, cfg=ppo_cfg
+        )
 
         dones_exp = dones[:, :, None].expand(-1, -1, env.AGENTS)
         gae = compute_gae(
@@ -187,12 +191,15 @@ def main() -> None:
 
         upd_time = time.time() - upd_start
         fps = float(steps_per_update / max(1e-6, upd_time))
+        elapsed_s = float(time.time() - train_start)
 
         if global_step // log_cfg.sqlite_flush_every_steps > last_sqlite_step // log_cfg.sqlite_flush_every_steps:
             sqlite.write_metrics(
                 MetricsRow(
                     global_step=int(global_step),
                     episode=int(total_episodes),
+                    pellets_eaten=int(pellets_eaten),
+                    power_eaten=int(power_eaten),
                     pacman_reward_mean=pac_rew,
                     ghosts_reward_mean=ghost_rew,
                     loss=float(stats.loss),
@@ -201,18 +208,19 @@ def main() -> None:
                     entropy=float(stats.entropy),
                     approx_kl=float(stats.approx_kl),
                     fps=fps,
+                    elapsed_s=elapsed_s,
                 )
             )
             last_sqlite_step = global_step
 
         if reporter is not None and log_cfg.telegram_progress_every_steps > 0:
             if global_step // log_cfg.telegram_progress_every_steps > last_progress_step // log_cfg.telegram_progress_every_steps:
-                elapsed = time.time() - train_start
                 text = (
                     f"step={global_step} update={update + 1}/{updates}\n"
+                    f"pellets_eaten={pellets_eaten} power_eaten={power_eaten}\n"
                     f"pac_rew_mean={pac_rew:.3f} ghost_rew_mean={ghost_rew:.3f}\n"
                     f"loss={stats.loss:.4f} kl={stats.approx_kl:.6f} ent={stats.entropy:.4f}\n"
-                    f"fps={fps:.0f} elapsed_s={elapsed:.0f}"
+                    f"fps={fps:.0f} elapsed_s={elapsed_s:.0f}"
                 )
                 reporter.upsert_progress(text=text)
                 last_progress_step = global_step
