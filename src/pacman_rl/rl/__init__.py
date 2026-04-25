@@ -1,4 +1,6 @@
-from .ppo import PPOStats, ppo_update
-from .rollout_buffer import RolloutBatch, compute_gae
+from __future__ import annotations
 
-__all__ = ["PPOStats", "RolloutBatch", "compute_gae", "ppo_update"]
+from pacman_rl.rl.ppo import GAEOutput, PPOStats, compute_gae, ppo_update
+
+__all__ = ["GAEOutput", "PPOStats", "compute_gae", "ppo_update"]
+

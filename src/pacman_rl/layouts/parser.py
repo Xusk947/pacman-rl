@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 
 @dataclass(frozen=True)
@@ -12,15 +11,19 @@ class ParsedLayout:
     height: int
     width: int
     pacman_spawn: tuple[int, int]
-    ghost_spawns: list[tuple[int, int]]
+    ghost_spawns: dict[str, tuple[int, int]]
+
+
+ALLOWED = {"#", " ", ".", "o", "0", "B", "P", "I", "C"}
+GHOSTS = ("B", "P", "I", "C")
 
 
 def _normalize_lines(text: str) -> list[str]:
     lines = [line.rstrip("\n") for line in text.splitlines() if line.strip("\n") != ""]
     if not lines:
         raise ValueError("layout is empty")
-    width = max(len(line) for line in lines)
-    return [line.ljust(width) for line in lines]
+    w = max(len(line) for line in lines)
+    return [line.ljust(w) for line in lines]
 
 
 def parse_layout_text(text: str, *, name: str) -> ParsedLayout:
@@ -28,23 +31,34 @@ def parse_layout_text(text: str, *, name: str) -> ParsedLayout:
     h = len(rows)
     w = len(rows[0])
 
-    pac = None
-    ghosts: list[tuple[int, int]] = []
+    pac: tuple[int, int] | None = None
+    ghosts: dict[str, tuple[int, int]] = {}
+    pellets = 0
+
     for r, line in enumerate(rows):
         if len(line) != w:
             raise ValueError("layout must be rectangular after normalization")
         for c, ch in enumerate(line):
-            if ch == "P":
+            if ch not in ALLOWED:
+                raise ValueError(f"unknown symbol: {ch} at r={r} c={c}")
+            if ch == "0":
                 if pac is not None:
-                    raise ValueError("layout contains more than one Pacman spawn")
+                    raise ValueError("layout contains more than one Pacman spawn '0'")
                 pac = (r, c)
-            elif ch == "G":
-                ghosts.append((r, c))
+            elif ch in GHOSTS:
+                if ch in ghosts:
+                    raise ValueError(f"layout contains more than one ghost spawn '{ch}'")
+                ghosts[ch] = (r, c)
+            elif ch in (".", "o"):
+                pellets += 1
 
     if pac is None:
-        raise ValueError("layout must contain a Pacman spawn 'P'")
-    if not ghosts:
-        raise ValueError("layout must contain at least one ghost spawn 'G'")
+        raise ValueError("layout must contain Pacman spawn '0'")
+    for g in GHOSTS:
+        if g not in ghosts:
+            raise ValueError(f"layout must contain ghost spawn '{g}'")
+    if pellets <= 0:
+        raise ValueError("layout must contain at least one pellet '.' or power pellet 'o'")
 
     return ParsedLayout(
         name=name,
@@ -66,10 +80,3 @@ def load_layouts_from_dir(path: Path) -> list[ParsedLayout]:
         raise ValueError(f"no .txt layouts found in {path}")
     return [load_layout_file(p) for p in files]
 
-
-def group_layouts_by_size(layouts: Iterable[ParsedLayout]) -> dict[tuple[int, int], list[ParsedLayout]]:
-    groups: dict[tuple[int, int], list[ParsedLayout]] = {}
-    for lay in layouts:
-        key = (lay.height, lay.width)
-        groups.setdefault(key, []).append(lay)
-    return groups
