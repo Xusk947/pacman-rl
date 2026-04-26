@@ -1,3 +1,6 @@
-from .torch_env import StepOutput, TorchPacmanEnv
+from __future__ import annotations
 
-__all__ = ["StepOutput", "TorchPacmanEnv"]
+from pacman_rl.env.torch_env import StepOutput, TorchPacmanEnv
+
+__all__ = ["TorchPacmanEnv", "StepOutput"]
+

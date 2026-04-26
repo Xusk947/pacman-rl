@@ -1,3 +1,6 @@
-from .cnn_actor_critic import ActorCriticOutput, CNNActorCritic
+from __future__ import annotations
 
-__all__ = ["ActorCriticOutput", "CNNActorCritic"]
+from pacman_rl.models.shared_cnn import SharedCNNActorCritic
+
+__all__ = ["SharedCNNActorCritic"]
+
