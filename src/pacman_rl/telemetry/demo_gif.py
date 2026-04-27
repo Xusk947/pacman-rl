@@ -11,7 +11,7 @@ from pacman_rl.ghosts import ClassicGhostPolicy
 from pacman_rl.layouts import ParsedLayout
 
 
-def _frame_from_env(env: TorchPacmanEnv, *, scale: int = 8) -> Image.Image:
+def _frame_from_env(env: TorchPacmanEnv, *, scale: int = 8, pac_act: int | None = None) -> Image.Image:
     h = int(env.height)
     w = int(env.width)
     img = Image.new("RGB", (w * scale, h * scale), (0, 0, 0))
@@ -39,10 +39,15 @@ def _frame_from_env(env: TorchPacmanEnv, *, scale: int = 8) -> Image.Image:
 
     pr = int(pac[0].item())
     pc = int(pac[1].item())
-    d.ellipse(
-        [pc * scale + 1, pr * scale + 1, pc * scale + scale - 2, pr * scale + scale - 2],
-        fill=(255, 220, 0),
-    )
+    box = [pc * scale + 1, pr * scale + 1, pc * scale + scale - 2, pr * scale + scale - 2]
+    if pac_act in (0, 1, 2, 3):
+        mouth = 60.0
+        center = {0: 90.0, 1: 270.0, 2: 180.0, 3: 0.0}[int(pac_act)]
+        start = (center + mouth / 2.0) % 360.0
+        end = (center - mouth / 2.0) % 360.0
+        d.pieslice(box, start=start, end=end, fill=(255, 220, 0))
+    else:
+        d.ellipse(box, fill=(255, 220, 0))
 
     colors = [(255, 0, 0), (255, 105, 180), (0, 255, 255), (255, 165, 0)]
     if frightened:
@@ -76,11 +81,13 @@ def make_demo_gif(
 
     frames: list[Image.Image] = []
     obs = env.get_obs()
+    last_act: int | None = None
     for _ in range(int(max_steps)):
-        frames.append(_frame_from_env(env, scale=scale))
+        frames.append(_frame_from_env(env, scale=scale, pac_act=last_act))
         pac_obs = obs[:, 0]
         with torch.no_grad():
             pac_act = pacman_action(pac_obs).to(device=device, dtype=torch.int64).view(1)
+        last_act = int(pac_act.item())
         ghost_act = ghosts.act(
             walls=env.walls,
             pacman_pos=env.pacman,
@@ -96,7 +103,7 @@ def make_demo_gif(
         out = env.step(acts)
         obs = out.obs
         if bool(out.done.item()):
-            frames.append(_frame_from_env(env, scale=scale))
+            frames.append(_frame_from_env(env, scale=scale, pac_act=last_act))
             break
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,4 +124,3 @@ def env_cfg_default():
     from pacman_rl.config import EnvConfig
 
     return EnvConfig()
-

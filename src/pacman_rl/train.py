@@ -25,6 +25,7 @@ from pacman_rl.utils import resolve_device
 class AlgoState:
     algo: str
     step: int = 0
+    episodes: int = 0
     pellets: int = 0
     power: int = 0
     avg_reward: float | None = None
@@ -317,12 +318,20 @@ def main() -> None:
 
         st = state_by_algo[algo]
         st.step = 0
+        st.episodes = 0
         st.pellets = 0
         st.power = 0
         st.avg_reward = None
         st.win_rate = None
         st.death_rate = None
         st.fps = None
+
+        metrics_every_steps = max(1, total_steps_per_algo // 100)
+        next_metrics_step = metrics_every_steps
+        last_metrics_step = 0
+        last_loss: float | None = None
+        last_entropy: float | None = None
+        last_kl: float | None = None
 
         if algo in ("ppo", "a2c"):
             model = SharedCNNActorCritic(in_channels=13, actions=env.ACTIONS).to(device)
@@ -336,8 +345,13 @@ def main() -> None:
                 else:
                     loss, entropy, kl = _run_a2c_update(model=model, opt=opt, roll=roll, ppo=ppo_cfg)
 
+                last_loss = float(loss)
+                last_entropy = float(entropy)
+                last_kl = float(kl)
+
                 st.step += steps_per_iter
                 combined_step += steps_per_iter
+                st.episodes += int(roll.episodes)
                 st.pellets += int(roll.pellets_eaten)
                 st.power += int(roll.power_eaten)
                 st.avg_reward = float(roll.rewards.mean().item())
@@ -345,12 +359,12 @@ def main() -> None:
                 st.death_rate = (float(roll.deaths) / float(roll.episodes)) if roll.episodes > 0 else None
                 st.fps = float(steps_per_iter / max(1e-6, time.time() - t0))
 
-                if st.step // log_cfg.sqlite_flush_every_steps != (st.step - steps_per_iter) // log_cfg.sqlite_flush_every_steps:
+                while next_metrics_step <= int(total_steps_per_algo) and next_metrics_step <= int(st.step):
                     sqlite.write_metrics(
                         MetricsRow(
                             algo=algo,
-                            global_step=int(st.step),
-                            episode=0,
+                            global_step=int(next_metrics_step),
+                            episode=int(st.episodes),
                             pellets_eaten=int(st.pellets),
                             power_eaten=int(st.power),
                             pacman_reward_mean=float(st.avg_reward or 0.0),
@@ -366,6 +380,8 @@ def main() -> None:
                             elapsed_s=float(time.time() - start_unix),
                         )
                     )
+                    last_metrics_step = int(next_metrics_step)
+                    next_metrics_step += metrics_every_steps
 
                 _maybe_report(
                     reporter=reporter,
@@ -469,17 +485,18 @@ def main() -> None:
 
                 st.step += steps_per_iter
                 combined_step += steps_per_iter
+                st.episodes += int(ep_done)
                 st.avg_reward = float(reward_sum) / float(max(1, int(ppo_cfg.rollout_steps)))
                 st.win_rate = (float(win) / float(ep_done)) if ep_done > 0 else None
                 st.death_rate = (float(death) / float(ep_done)) if ep_done > 0 else None
                 st.fps = float(steps_per_iter / max(1e-6, time.time() - t0))
 
-                if st.step // log_cfg.sqlite_flush_every_steps != (st.step - steps_per_iter) // log_cfg.sqlite_flush_every_steps:
+                while next_metrics_step <= int(total_steps_per_algo) and next_metrics_step <= int(st.step):
                     sqlite.write_metrics(
                         MetricsRow(
                             algo=algo,
-                            global_step=int(st.step),
-                            episode=0,
+                            global_step=int(next_metrics_step),
+                            episode=int(st.episodes),
                             pellets_eaten=int(st.pellets),
                             power_eaten=int(st.power),
                             pacman_reward_mean=float(st.avg_reward or 0.0),
@@ -495,6 +512,8 @@ def main() -> None:
                             elapsed_s=float(time.time() - start_unix),
                         )
                     )
+                    last_metrics_step = int(next_metrics_step)
+                    next_metrics_step += metrics_every_steps
 
                 _maybe_report(
                     reporter=reporter,
@@ -523,6 +542,28 @@ def main() -> None:
                         + " fps="
                         + f"{float(st.fps or 0.0):.0f}"
                     )
+
+        if last_metrics_step < int(total_steps_per_algo):
+            sqlite.write_metrics(
+                MetricsRow(
+                    algo=algo,
+                    global_step=int(total_steps_per_algo),
+                    episode=int(st.episodes),
+                    pellets_eaten=int(st.pellets),
+                    power_eaten=int(st.power),
+                    pacman_reward_mean=float(st.avg_reward or 0.0),
+                    ghosts_reward_mean=0.0,
+                    win_rate=st.win_rate,
+                    death_rate=st.death_rate,
+                    loss=last_loss,
+                    policy_loss=None,
+                    value_loss=None,
+                    entropy=last_entropy,
+                    approx_kl=last_kl,
+                    fps=float(st.fps or 0.0),
+                    elapsed_s=float(time.time() - start_unix),
+                )
+            )
 
         if reporter is not None:
             sqlite.checkpoint(truncate=True)
