@@ -21,6 +21,19 @@ class TelegramConfig:
 def detect_telegram_config() -> TelegramConfig:
     bot_token = os.environ.get("BOT_TOKEN", "").strip()
     chat_id = os.environ.get("USER_ID", "").strip()
+
+    if not bot_token or not chat_id:
+        try:
+            from kaggle_secrets import UserSecretsClient  # type: ignore
+
+            client = UserSecretsClient()
+            if not bot_token:
+                bot_token = str(client.get_secret("BOT_TOKEN") or "").strip()
+            if not chat_id:
+                chat_id = str(client.get_secret("USER_ID") or "").strip()
+        except Exception:
+            pass
+
     enabled = bool(bot_token and chat_id)
     return TelegramConfig(bot_token=bot_token, chat_id=chat_id, enabled=enabled)
 
