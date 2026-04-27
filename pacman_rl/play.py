@@ -71,10 +71,10 @@ def parse_args(argv: list[str] | None = None) -> PlayArgs:
 
 
 def _load_model(model_path: str, *, device: str, env):
-    from stable_baselines3 import A2C, DQN, PPO
+    from stable_baselines3 import A2C, PPO
 
     errors: list[Exception] = []
-    for cls in (PPO, A2C, DQN):
+    for cls in (PPO, A2C):
         try:
             return cls.load(model_path, env=env, device=device)
         except Exception as e:

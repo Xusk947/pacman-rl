@@ -1,6 +1,6 @@
 # pacman-rl
 
-CLI that trains `gymnasium.make("ALE/Pacman-v5")` with 3 algorithms (PPO, A2C, DQN) and logs episode + training metrics into SQLite.
+CLI that trains `gymnasium.make("ALE/Pacman-v5")` with PPO and A2C and logs episode + training metrics into SQLite.
 
 ## Kaggle
 
@@ -29,7 +29,7 @@ Telegram test (short run + short report video):
 ```bash
 %env PACMAN_RL_TG_REPORT_MAX_STEPS=1000
 %env PACMAN_RL_TG_REPORT_VIDEO_LENGTH=300
-!make kaggle-runenv TOTAL_TIMESTEPS=5000 ALGOS="ppo" DEVICE=cuda
+!make kaggle-runenv TOTAL_TIMESTEPS=5000 ALGOS="ppo" SEEDS="0,1,2" DEVICE=cuda
 ```
 
 ## Install
@@ -53,7 +53,7 @@ PyTorch GPU wheels are installed via the official PyTorch instructions for your 
 ## Run
 
 ```bash
-pacman-rl-train --db runs.sqlite --total-timesteps 200000 --algos ppo a2c dqn
+pacman-rl-train --db runs.sqlite --total-timesteps 200000 --algos ppo a2c --seeds 0,1,2,3,4
 ```
 
 `ALE/Pacman-v5` rewards are scaled (pellet reward is typically `1.0`), so the default `--win-score-threshold` is `500`.
@@ -106,8 +106,15 @@ pacman-rl-play --model models/<run_id>_ppo.zip --render rgb_array --record-video
 
 ### Report (videos + plots)
 
-After training you can generate one playback video per finished run and plot PNG graphs from `training_metrics`:
+After training you can generate playback videos, plot PNG graphs from `training_metrics`, and compute evaluation summaries (including baselines):
 
 ```bash
 pacman-rl-report --db runs.sqlite --models-dir models --out-dir artifacts --device cuda
 ```
+
+The report writes:
+
+- `artifacts/plots/*`: training curves and evaluation plots
+- `artifacts/videos/*`: rollout videos (can be disabled with `--skip-videos`)
+- `artifacts/summary/summary.json`: aggregated evaluation results (mean + bootstrap CI across training seeds)
+- `artifacts/summary/summary.csv`: a compact table for the write-up

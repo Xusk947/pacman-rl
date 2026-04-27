@@ -3,7 +3,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from pacman_rl.utils import pick_device
+from pacman_rl.utils import parse_int_tuple, pick_device
 
 
 @dataclass(frozen=True)
@@ -12,7 +12,7 @@ class CliArgs:
     db_path: str
     total_timesteps: int
     algos: tuple[str, ...]
-    seed: int
+    seeds: tuple[int, ...]
     n_envs: int
     frame_stack: int
     win_score_threshold: float
@@ -31,8 +31,8 @@ def parse_args(argv: list[str] | None = None) -> CliArgs:
     parser.add_argument("--env-id", default="ALE/Pacman-v5")
     parser.add_argument("--db", dest="db_path", default="runs.sqlite")
     parser.add_argument("--total-timesteps", type=int, default=200_000)
-    parser.add_argument("--algos", nargs="+", default=["ppo", "a2c", "dqn"])
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--algos", nargs="+", default=["ppo", "a2c"])
+    parser.add_argument("--seeds", default="0")
     parser.add_argument("--n-envs", type=int, default=8)
     parser.add_argument("--frame-stack", type=int, default=4)
     parser.add_argument("--win-score-threshold", type=float, default=500.0)
@@ -51,12 +51,15 @@ def parse_args(argv: list[str] | None = None) -> CliArgs:
 
     ns = parser.parse_args(argv)
     algos = tuple(a.strip().lower() for a in ns.algos)
+    seeds = parse_int_tuple(str(ns.seeds))
+    if not seeds:
+        raise ValueError("--seeds must contain at least one integer")
     return CliArgs(
         env_id=str(ns.env_id),
         db_path=str(ns.db_path),
         total_timesteps=int(ns.total_timesteps),
         algos=algos,
-        seed=int(ns.seed),
+        seeds=seeds,
         n_envs=int(ns.n_envs),
         frame_stack=int(ns.frame_stack),
         win_score_threshold=float(ns.win_score_threshold),
@@ -93,7 +96,7 @@ def main(argv: list[str] | None = None) -> None:
         db_path=args.db_path,
         total_timesteps=args.total_timesteps,
         algos=args.algos,
-        seed=args.seed,
+        seeds=args.seeds,
         n_envs=args.n_envs,
         frame_stack=args.frame_stack,
         win_score_threshold=args.win_score_threshold,

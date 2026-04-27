@@ -8,6 +8,7 @@ from typing import Any
 
 from pacman_rl.callbacks import PacmanSQLiteCallback
 from pacman_rl.db import SQLiteLogger
+from pacman_rl.utils import parse_int_tuple, set_global_seeds
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class TrainJob:
     db_path: str
     total_timesteps: int
     algos: tuple[str, ...]
-    seed: int
+    seeds: tuple[int, ...]
     n_envs: int
     frame_stack: int
     win_score_threshold: float
@@ -77,36 +78,8 @@ def _make_model(algo: str, *, env: Any, device: str, seed: int) -> Any:
         from stable_baselines3 import A2C
 
         return A2C("CnnPolicy", env, device=device, seed=seed, verbose=1)
-    if algo == "dqn":
-        from stable_baselines3 import DQN
-
-        return DQN(
-            "CnnPolicy",
-            env,
-            device=device,
-            seed=seed,
-            verbose=1,
-            buffer_size=250_000,
-            learning_starts=50_000,
-            train_freq=4,
-            target_update_interval=10_000,
-        )
 
     raise ValueError(f"Unknown algo: {algo}")
-
-
-def _parse_int_tuple(text: str) -> tuple[int, ...]:
-    raw = str(text or "").replace(";", ",").replace(" ", ",")
-    out: list[int] = []
-    for part in raw.split(","):
-        s = part.strip()
-        if not s:
-            continue
-        try:
-            out.append(int(s))
-        except Exception:
-            continue
-    return tuple(out)
 
 
 def run_train_job(job: TrainJob) -> None:
@@ -119,7 +92,7 @@ def run_train_job(job: TrainJob) -> None:
         telegram = None
 
     max_bytes = int(os.environ.get("PACMAN_RL_TG_MAX_BYTES", str(45 * 1024 * 1024)))
-    milestone_pcts = _parse_int_tuple(os.environ.get("PACMAN_RL_TG_MILESTONE_PCTS", ""))
+    milestone_pcts = parse_int_tuple(os.environ.get("PACMAN_RL_TG_MILESTONE_PCTS", ""))
     milestone_video_dir_raw = os.environ.get("PACMAN_RL_TG_MILESTONE_DIR", "").strip()
     milestone_video_dir = milestone_video_dir_raw if milestone_video_dir_raw else None
     milestone_episodes = int(os.environ.get("PACMAN_RL_TG_MILESTONE_EPISODES", "1"))
@@ -133,79 +106,84 @@ def run_train_job(job: TrainJob) -> None:
     saved_models: list[str] = []
     try:
         if telegram and telegram.enabled:
-            telegram.send_or_edit(f"training steps 0/{job.total_timesteps}\nstage 0/{len(job.algos)}")
+            stage_total = max(1, len(job.seeds) * len(job.algos))
+            telegram.send_or_edit(f"training steps 0/{job.total_timesteps}\nstage 0/{stage_total}")
 
-        model_total = max(1, len(job.algos))
-        for model_index, algo in enumerate(job.algos, start=1):
-            n_envs = 1 if algo.lower() == "dqn" else max(1, int(job.n_envs))
-            venv = _build_vec_env(
-                env_id=job.env_id,
-                seed=job.seed,
-                n_envs=n_envs,
-                frame_stack=job.frame_stack,
-                record_video_dir=job.record_video_dir,
-                video_length=job.video_length,
-                video_trigger_steps=job.video_trigger_steps,
-                video_name_prefix=f"train_{algo.lower()}",
-            )
-            run_id: str | None = None
-            try:
-                config: dict[str, Any] = asdict(job) | {"algo": algo, "n_envs_effective": n_envs}
-                run_id = db.start_run(
-                    algo=algo,
+        stage_total = max(1, len(job.seeds) * len(job.algos))
+        stage_index = 0
+        for seed in job.seeds:
+            set_global_seeds(int(seed))
+            for algo in job.algos:
+                stage_index += 1
+                n_envs = max(1, int(job.n_envs))
+                venv = _build_vec_env(
                     env_id=job.env_id,
-                    seed=job.seed,
-                    device=job.device,
-                    total_timesteps=job.total_timesteps,
-                    config=config,
+                    seed=int(seed),
+                    n_envs=n_envs,
+                    frame_stack=job.frame_stack,
+                    record_video_dir=job.record_video_dir,
+                    video_length=job.video_length,
+                    video_trigger_steps=job.video_trigger_steps,
+                    video_name_prefix=f"train_{algo.lower()}_seed{int(seed)}",
                 )
-
-                callback = PacmanSQLiteCallback(
-                    db=db,
-                    run_id=run_id,
-                    algo=algo,
-                    model_index=model_index,
-                    model_total=model_total,
-                    total_timesteps=job.total_timesteps,
-                    win_score_threshold=job.win_score_threshold,
-                    log_every_steps=job.log_every_steps,
-                    estimate_total_pellets=True,
-                    print_every_percent=job.print_every_percent,
-                    stats_window_episodes=job.stats_window_episodes,
-                    telegram=telegram if (telegram and telegram.enabled) else None,
-                    milestone_percents=milestone_pcts if (telegram and telegram.enabled) else (),
-                    milestone_models_dir=job.models_dir,
-                    milestone_video_dir=milestone_video_dir if (telegram and telegram.enabled) else None,
-                    milestone_env_id=job.env_id,
-                    milestone_seed=job.seed,
-                    milestone_frame_stack=job.frame_stack,
-                    milestone_device=job.device,
-                    milestone_episodes=milestone_episodes,
-                    milestone_max_steps=milestone_max_steps,
-                    milestone_video_length=milestone_video_length,
-                    milestone_render_fps=milestone_render_fps,
-                    milestone_max_bytes=max_bytes,
-                )
-                model = _make_model(algo, env=venv, device=job.device, seed=job.seed)
-
+                run_id: str | None = None
                 try:
-                    model.learn(total_timesteps=job.total_timesteps, callback=callback)
-                except KeyboardInterrupt:
-                    pass
+                    config: dict[str, Any] = asdict(job) | {"algo": algo, "seed_effective": int(seed), "n_envs_effective": n_envs}
+                    run_id = db.start_run(
+                        algo=algo,
+                        env_id=job.env_id,
+                        seed=int(seed),
+                        device=job.device,
+                        total_timesteps=job.total_timesteps,
+                        config=config,
+                    )
+
+                    callback = PacmanSQLiteCallback(
+                        db=db,
+                        run_id=run_id,
+                        algo=f"{algo.lower()}[seed={int(seed)}]",
+                        model_index=stage_index,
+                        model_total=stage_total,
+                        total_timesteps=job.total_timesteps,
+                        win_score_threshold=job.win_score_threshold,
+                        log_every_steps=job.log_every_steps,
+                        estimate_total_pellets=True,
+                        print_every_percent=job.print_every_percent,
+                        stats_window_episodes=job.stats_window_episodes,
+                        telegram=telegram if (telegram and telegram.enabled) else None,
+                        milestone_percents=milestone_pcts if (telegram and telegram.enabled) else (),
+                        milestone_models_dir=job.models_dir,
+                        milestone_video_dir=milestone_video_dir if (telegram and telegram.enabled) else None,
+                        milestone_env_id=job.env_id,
+                        milestone_seed=int(seed),
+                        milestone_frame_stack=job.frame_stack,
+                        milestone_device=job.device,
+                        milestone_episodes=milestone_episodes,
+                        milestone_max_steps=milestone_max_steps,
+                        milestone_video_length=milestone_video_length,
+                        milestone_render_fps=milestone_render_fps,
+                        milestone_max_bytes=max_bytes,
+                    )
+                    model = _make_model(algo, env=venv, device=job.device, seed=int(seed))
+
+                    try:
+                        model.learn(total_timesteps=job.total_timesteps, callback=callback)
+                    except KeyboardInterrupt:
+                        pass
+                    finally:
+                        model_path = os.path.join(job.models_dir, f"{run_id}_{algo}.zip")
+                        try:
+                            model.save(model_path)
+                            saved_models.append(str(model_path))
+                        except Exception:
+                            pass
                 finally:
-                    model_path = os.path.join(job.models_dir, f"{run_id}_{algo}.zip")
-                    try:
-                        model.save(model_path)
-                        saved_models.append(str(model_path))
-                    except Exception:
-                        pass
-            finally:
-                if run_id is not None:
-                    try:
-                        db.end_run(run_id)
-                    except Exception:
-                        pass
-                venv.close()
+                    if run_id is not None:
+                        try:
+                            db.end_run(run_id)
+                        except Exception:
+                            pass
+                    venv.close()
     except Exception as e:
         if telegram and telegram.enabled:
             try:

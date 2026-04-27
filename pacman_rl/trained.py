@@ -27,7 +27,7 @@ def parse_args(argv: list[str] | None = None) -> TrainedArgs:
     parser = argparse.ArgumentParser(prog="pacman-rl-trained")
     parser.add_argument("--models-dir", default="models")
     parser.add_argument("--out-dir", default="artifacts")
-    parser.add_argument("--algos", nargs="+", default=["ppo", "a2c", "dqn"])
+    parser.add_argument("--algos", nargs="+", default=["ppo", "a2c"])
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default=os.environ.get("PACMAN_RL_DEVICE", "auto"))
     parser.add_argument("--frame-stack", type=int, default=4)
     parser.add_argument("--episodes", type=int, default=1)
@@ -51,7 +51,7 @@ def parse_args(argv: list[str] | None = None) -> TrainedArgs:
 
 def _algo_from_model_name(model_path: str) -> str:
     stem = Path(model_path).stem.lower()
-    for algo in ("ppo", "a2c", "dqn"):
+    for algo in ("ppo", "a2c"):
         if stem.endswith(f"_{algo}"):
             return algo
     return "model"

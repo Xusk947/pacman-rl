@@ -79,3 +79,42 @@ def pick_device(requested: str) -> str:
     if _mps_works():
         return "mps"
     return "cpu"
+
+
+def parse_int_tuple(text: str) -> tuple[int, ...]:
+    raw = str(text or "").replace(";", ",").replace(" ", ",")
+    out: list[int] = []
+    for part in raw.split(","):
+        s = part.strip()
+        if not s:
+            continue
+        try:
+            out.append(int(s))
+        except Exception:
+            continue
+    return tuple(out)
+
+
+def set_global_seeds(seed: int) -> None:
+    try:
+        import random
+
+        random.seed(int(seed))
+    except Exception:
+        pass
+
+    try:
+        import numpy as np
+
+        np.random.seed(int(seed))
+    except Exception:
+        pass
+
+    try:
+        import torch
+
+        torch.manual_seed(int(seed))
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(int(seed))
+    except Exception:
+        pass

@@ -11,7 +11,10 @@ MODEL ?=
 ARTIFACTS ?= artifacts
 TOTAL_TIMESTEPS ?= 2000000
 STEPS ?= $(TOTAL_TIMESTEPS)
-ALGOS ?= ppo a2c dqn
+ALGOS ?= ppo a2c
+SEEDS ?= 0,1,2,3,4
+EVAL_SEEDS ?= 0,1,2,3,4
+REPORT_MAX_STEPS ?= 20000
 DEVICE ?= cuda
 
 .PHONY: venv install runenv runvenv runtrained test clean
@@ -39,8 +42,8 @@ install: venv
 
 runenv: install
 	mkdir -p $(ARTIFACTS)
-	$(TRAIN) --db runs.sqlite --total-timesteps $(STEPS) --algos $(ALGOS) --device $(DEVICE) --print-every-percent 5 --stats-window-episodes 100
-	$(REPORT) --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE) --max-steps $(STEPS)
+	$(TRAIN) --db runs.sqlite --total-timesteps $(STEPS) --algos $(ALGOS) --seeds $(SEEDS) --device $(DEVICE) --print-every-percent 5 --stats-window-episodes 100
+	$(REPORT) --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE) --max-steps $(REPORT_MAX_STEPS) --eval-seeds $(EVAL_SEEDS)
 
 runvenv: runenv
 
@@ -72,8 +75,8 @@ kaggle-install:
 
 kaggle-runenv: kaggle-install
 	mkdir -p $(ARTIFACTS)
-	$(PY_SYS) -m pacman_rl.cli --db runs.sqlite --total-timesteps $(STEPS) --algos $(ALGOS) --device $(DEVICE) --print-every-percent 5 --stats-window-episodes 100
-	$(PY_SYS) -m pacman_rl.report --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE) --max-steps $(STEPS)
+	$(PY_SYS) -m pacman_rl.cli --db runs.sqlite --total-timesteps $(STEPS) --algos $(ALGOS) --seeds $(SEEDS) --device $(DEVICE) --print-every-percent 5 --stats-window-episodes 100
+	$(PY_SYS) -m pacman_rl.report --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE) --max-steps $(REPORT_MAX_STEPS) --eval-seeds $(EVAL_SEEDS)
 
 kaggle-runtrained: kaggle-install
 	mkdir -p $(ARTIFACTS)
