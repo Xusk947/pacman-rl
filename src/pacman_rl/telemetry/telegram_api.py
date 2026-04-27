@@ -35,6 +35,35 @@ def telegram_target_from_env(*, bot_token_env: str = "TELEGRAM_BOT_TOKEN", chat_
     return TelegramTarget(bot_token=bot_token, chat_id=chat_id)
 
 
+def _get_kaggle_secret(name: str) -> str | None:
+    try:
+        from kaggle_secrets import UserSecretsClient  # type: ignore
+    except Exception:
+        return None
+    try:
+        client = UserSecretsClient()
+        val = client.get_secret(name)
+        if isinstance(val, str) and val:
+            return val
+    except Exception:
+        return None
+    return None
+
+
+def telegram_target_auto(
+    *,
+    bot_token_key: str = "TELEGRAM_BOT_TOKEN",
+    chat_id_key: str = "TELEGRAM_CHAT_ID",
+) -> TelegramTarget:
+    bot_token = _get_kaggle_secret(bot_token_key) or os.environ.get(bot_token_key, "")
+    chat_id = _get_kaggle_secret(chat_id_key) or os.environ.get(chat_id_key, "")
+    if not bot_token:
+        raise ValueError(f"missing telegram bot token: {bot_token_key}")
+    if not chat_id:
+        raise ValueError(f"missing telegram chat id: {chat_id_key}")
+    return TelegramTarget(bot_token=bot_token, chat_id=chat_id)
+
+
 def _handle_http_error(e: HTTPError) -> None:
     if e.code != 429:
         raise
@@ -139,4 +168,3 @@ def send_document(*, target: TelegramTarget, file_path: Path, caption: str = "",
     except HTTPError as e:
         _handle_http_error(e)
     return {"status": "ok", "bytes": len(data)}
-

@@ -10,10 +10,11 @@ from torch.distributions import Categorical
 
 from pacman_rl.config import EnvConfig, LogConfig, PPOConfig
 from pacman_rl.env import TorchPacmanEnv
+from pacman_rl.ghosts import ClassicGhostPolicy
 from pacman_rl.layouts import load_layouts_from_dir
 from pacman_rl.models import SharedCNNActorCritic
 from pacman_rl.rl import compute_gae, ppo_update
-from pacman_rl.telemetry import SqliteLogger, TelegramReporter, telegram_target_from_env
+from pacman_rl.telemetry import SqliteLogger, TelegramReporter, telegram_target_auto
 from pacman_rl.telemetry.telegram_api import TelegramTarget
 from pacman_rl.telemetry.sqlite_logger import MetricsRow
 from pacman_rl.utils import resolve_device
@@ -43,39 +44,48 @@ def _collect_rollout(
     *,
     env: TorchPacmanEnv,
     model: SharedCNNActorCritic,
+    ghosts: ClassicGhostPolicy,
     cfg: PPOConfig,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
     t = int(cfg.rollout_steps)
     b = env.batch_size
-    a = env.AGENTS
     c = 13
     h = env.height
     w = env.width
 
-    obs_buf = torch.zeros((t, b, a, c, h, w), device=env.device, dtype=torch.float32)
-    act_buf = torch.zeros((t, b, a), device=env.device, dtype=torch.int64)
-    logp_buf = torch.zeros((t, b, a), device=env.device, dtype=torch.float32)
-    val_buf = torch.zeros((t, b, a), device=env.device, dtype=torch.float32)
-    rew_buf = torch.zeros((t, b, a), device=env.device, dtype=torch.float32)
+    obs_buf = torch.zeros((t, b, c, h, w), device=env.device, dtype=torch.float32)
+    act_buf = torch.zeros((t, b), device=env.device, dtype=torch.int64)
+    logp_buf = torch.zeros((t, b), device=env.device, dtype=torch.float32)
+    val_buf = torch.zeros((t, b), device=env.device, dtype=torch.float32)
+    rew_buf = torch.zeros((t, b), device=env.device, dtype=torch.float32)
     done_buf = torch.zeros((t, b), device=env.device, dtype=torch.bool)
     info_acc = torch.zeros((t, b, 3), device=env.device, dtype=torch.int64)
 
     obs = env.get_obs()
     for step in range(t):
-        obs_buf[step] = obs
-        obs_flat = obs.reshape(b * a, c, h, w)
+        pac_obs = obs[:, 0]
+        obs_buf[step] = pac_obs
         with torch.no_grad():
-            action_flat, logp_flat, value_flat = _sample(model, obs_flat)
-        action = action_flat.reshape(b, a)
-        logp = logp_flat.reshape(b, a)
-        value = value_flat.reshape(b, a)
+            pac_action, pac_logp, pac_val = _sample(model, pac_obs)
 
-        out = env.step(action)
+        ghost_action = ghosts.act(
+            walls=env.walls,
+            pacman_pos=env.pacman,
+            ghost_pos=env.ghosts,
+            frightened=env.frightened,
+            step_in_ep=env.steps,
+        )
 
-        act_buf[step] = action
-        logp_buf[step] = logp
-        val_buf[step] = value
-        rew_buf[step] = out.reward
+        actions = torch.zeros((b, env.AGENTS), device=env.device, dtype=torch.int64)
+        actions[:, 0] = pac_action
+        actions[:, 1:] = ghost_action
+
+        out = env.step(actions)
+
+        act_buf[step] = pac_action
+        logp_buf[step] = pac_logp
+        val_buf[step] = pac_val
+        rew_buf[step] = out.reward[:, 0]
         done_buf[step] = out.done
         info_acc[step, :, 0] = out.info["pellet_eaten"]
         info_acc[step, :, 1] = out.info["power_eaten"]
@@ -87,8 +97,7 @@ def _collect_rollout(
 
     with torch.no_grad():
         last_obs = env.get_obs()
-        last_flat = last_obs.reshape(b * a, c, h, w)
-        last_values = model(last_flat).value.reshape(b, a)
+        last_values = model(last_obs[:, 0]).value
 
     pellets_eaten = int(info_acc[:, :, 0].sum().item())
     power_eaten = int(info_acc[:, :, 1].sum().item())
@@ -129,6 +138,8 @@ def main() -> None:
 
     model = SharedCNNActorCritic(in_channels=13, actions=env.ACTIONS).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=ppo_cfg.learning_rate)
+    ghosts = ClassicGhostPolicy(device=device)
+    ghosts.reset(batch_size=cfg.batch_size, pacman_pos=env.pacman)
 
     sqlite = SqliteLogger(db_path=Path(log_cfg.sqlite_path))
 
@@ -137,10 +148,10 @@ def main() -> None:
         if cfg.telegram_dry_run:
             target = TelegramTarget(bot_token="dry_run", chat_id="dry_run")
         else:
-            target = telegram_target_from_env()
+            target = telegram_target_auto()
         reporter = TelegramReporter(target=target, dry_run=cfg.telegram_dry_run)
 
-    steps_per_update = cfg.batch_size * ppo_cfg.rollout_steps * env.AGENTS
+    steps_per_update = cfg.batch_size * ppo_cfg.rollout_steps
     updates = max(1, (cfg.total_steps + steps_per_update - 1) // steps_per_update)
 
     global_step = 0
@@ -153,25 +164,24 @@ def main() -> None:
     for update in range(int(updates)):
         upd_start = time.time()
         obs, actions, old_logp, values, rewards, dones, last_values, pellets_eaten, power_eaten = _collect_rollout(
-            env=env, model=model, cfg=ppo_cfg
+            env=env, model=model, ghosts=ghosts, cfg=ppo_cfg
         )
 
-        dones_exp = dones[:, :, None].expand(-1, -1, env.AGENTS)
         gae = compute_gae(
             rewards,
-            dones_exp,
+            dones,
             values,
             last_values,
             gamma=ppo_cfg.gamma,
             gae_lambda=ppo_cfg.gae_lambda,
         )
 
-        t, b, a, c, h, w = obs.shape
-        obs_flat = obs.reshape(t * b * a, c, h, w)
-        act_flat = actions.reshape(t * b * a)
-        logp_flat = old_logp.reshape(t * b * a)
-        adv_flat = gae.advantages.reshape(t * b * a)
-        ret_flat = gae.returns.reshape(t * b * a)
+        t, b, c, h, w = obs.shape
+        obs_flat = obs.reshape(t * b, c, h, w)
+        act_flat = actions.reshape(t * b)
+        logp_flat = old_logp.reshape(t * b)
+        adv_flat = gae.advantages.reshape(t * b)
+        ret_flat = gae.returns.reshape(t * b)
 
         stats = ppo_update(
             model,
@@ -186,8 +196,8 @@ def main() -> None:
 
         global_step += steps_per_update
 
-        pac_rew = float(rewards[:, :, 0].mean().item())
-        ghost_rew = float(rewards[:, :, 1:].mean().item())
+        pac_rew = float(rewards.mean().item())
+        ghost_rew = 0.0
 
         upd_time = time.time() - upd_start
         fps = float(steps_per_update / max(1e-6, upd_time))

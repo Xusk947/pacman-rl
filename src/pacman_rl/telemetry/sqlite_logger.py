@@ -9,12 +9,15 @@ from typing import Any
 
 @dataclass(frozen=True)
 class MetricsRow:
+    algo: str
     global_step: int
     episode: int
     pellets_eaten: int
     power_eaten: int
     pacman_reward_mean: float
     ghosts_reward_mean: float
+    win_rate: float | None
+    death_rate: float | None
     loss: float | None
     policy_loss: float | None
     value_loss: float | None
@@ -44,6 +47,7 @@ class SqliteLogger:
             """
             CREATE TABLE IF NOT EXISTS metrics (
               id INTEGER PRIMARY KEY,
+              algo TEXT NOT NULL DEFAULT 'ppo',
               global_step INTEGER NOT NULL,
               episode INTEGER NOT NULL,
               ts_unix INTEGER NOT NULL,
@@ -51,6 +55,8 @@ class SqliteLogger:
               power_eaten INTEGER NOT NULL DEFAULT 0,
               pacman_reward_mean REAL NOT NULL,
               ghosts_reward_mean REAL NOT NULL,
+              win_rate REAL,
+              death_rate REAL,
               loss REAL,
               policy_loss REAL,
               value_loss REAL,
@@ -61,12 +67,18 @@ class SqliteLogger:
             );
             """
         )
-        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_global_step ON metrics(global_step);")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_algo_step ON metrics(algo, global_step);")
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(metrics);").fetchall()}
+        if "algo" not in cols:
+            self._conn.execute("ALTER TABLE metrics ADD COLUMN algo TEXT NOT NULL DEFAULT 'ppo';")
         if "pellets_eaten" not in cols:
             self._conn.execute("ALTER TABLE metrics ADD COLUMN pellets_eaten INTEGER NOT NULL DEFAULT 0;")
         if "power_eaten" not in cols:
             self._conn.execute("ALTER TABLE metrics ADD COLUMN power_eaten INTEGER NOT NULL DEFAULT 0;")
+        if "win_rate" not in cols:
+            self._conn.execute("ALTER TABLE metrics ADD COLUMN win_rate REAL;")
+        if "death_rate" not in cols:
+            self._conn.execute("ALTER TABLE metrics ADD COLUMN death_rate REAL;")
         if "elapsed_s" not in cols:
             self._conn.execute("ALTER TABLE metrics ADD COLUMN elapsed_s REAL;")
 
@@ -77,13 +89,15 @@ class SqliteLogger:
             self._conn.execute(
                 """
                 INSERT INTO metrics(
-                  global_step, episode, ts_unix, pellets_eaten, power_eaten,
+                  algo, global_step, episode, ts_unix, pellets_eaten, power_eaten,
                   pacman_reward_mean, ghosts_reward_mean,
+                  win_rate, death_rate,
                   loss, policy_loss, value_loss, entropy, approx_kl, fps, elapsed_s
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
+                    str(row.algo),
                     int(row.global_step),
                     int(row.episode),
                     ts,
@@ -91,6 +105,8 @@ class SqliteLogger:
                     int(row.power_eaten),
                     float(row.pacman_reward_mean),
                     float(row.ghosts_reward_mean),
+                    None if row.win_rate is None else float(row.win_rate),
+                    None if row.death_rate is None else float(row.death_rate),
                     None if row.loss is None else float(row.loss),
                     None if row.policy_loss is None else float(row.policy_loss),
                     None if row.value_loss is None else float(row.value_loss),
@@ -108,8 +124,9 @@ class SqliteLogger:
     def last_n_metrics(self, n: int) -> list[dict[str, Any]]:
         cur = self._conn.execute(
             """
-            SELECT global_step, episode, ts_unix, pellets_eaten, power_eaten,
+            SELECT algo, global_step, episode, ts_unix, pellets_eaten, power_eaten,
                    pacman_reward_mean, ghosts_reward_mean,
+                   win_rate, death_rate,
                    loss, policy_loss, value_loss, entropy, approx_kl, fps, elapsed_s
             FROM metrics
             ORDER BY id DESC
@@ -120,20 +137,23 @@ class SqliteLogger:
         rows = cur.fetchall()
         return [
             {
-                "global_step": r[0],
-                "episode": r[1],
-                "ts_unix": r[2],
-                "pellets_eaten": r[3],
-                "power_eaten": r[4],
-                "pacman_reward_mean": r[5],
-                "ghosts_reward_mean": r[6],
-                "loss": r[7],
-                "policy_loss": r[8],
-                "value_loss": r[9],
-                "entropy": r[10],
-                "approx_kl": r[11],
-                "fps": r[12],
-                "elapsed_s": r[13],
+                "algo": r[0],
+                "global_step": r[1],
+                "episode": r[2],
+                "ts_unix": r[3],
+                "pellets_eaten": r[4],
+                "power_eaten": r[5],
+                "pacman_reward_mean": r[6],
+                "ghosts_reward_mean": r[7],
+                "win_rate": r[8],
+                "death_rate": r[9],
+                "loss": r[10],
+                "policy_loss": r[11],
+                "value_loss": r[12],
+                "entropy": r[13],
+                "approx_kl": r[14],
+                "fps": r[15],
+                "elapsed_s": r[16],
             }
             for r in rows
         ]
