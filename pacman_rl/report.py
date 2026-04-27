@@ -140,6 +140,7 @@ def generate_report(args: ReportArgs) -> None:
             video_length=args.video_length,
             video_trigger_steps=1,
             render_fps=args.render_fps,
+            video_name_prefix=f"{algo}_{run_id}",
         )
         play(play_args)
 

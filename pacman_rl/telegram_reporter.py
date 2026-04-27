@@ -220,7 +220,7 @@ class TelegramReporter:
         bar_len = 20
         filled = int(bar_len * percent / 100)
         bar = "█" * filled + "░" * (bar_len - filled)
-        text = f"<b>{algo.upper()}</b> [{bar}] {percent}%\nобучаем модель {current_step}/{total_steps}\nэтап {model_index}/{model_total}"
+        text = f"<b>{algo.upper()}</b> [{bar}] {percent}%\ntraining steps {current_step}/{total_steps}\nstage {model_index}/{model_total}"
         if extra:
             text += f"\n{extra}"
         return text

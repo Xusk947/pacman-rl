@@ -9,6 +9,7 @@ PIP_SYS ?= $(PY_SYS) -m pip
 MODEL ?=
 ARTIFACTS ?= artifacts
 TOTAL_TIMESTEPS ?= 2000000
+STEPS ?= $(TOTAL_TIMESTEPS)
 ALGOS ?= ppo a2c dqn
 DEVICE ?= cuda
 
@@ -37,7 +38,7 @@ install: venv
 
 runenv: install
 	mkdir -p $(ARTIFACTS)
-	$(TRAIN) --db runs.sqlite --total-timesteps $(TOTAL_TIMESTEPS) --algos $(ALGOS) --device $(DEVICE) --print-every-percent 5 --stats-window-episodes 100 --record-video-dir $(ARTIFACTS)/train_videos --video-trigger-steps 50000 --video-length 1800
+	$(TRAIN) --db runs.sqlite --total-timesteps $(STEPS) --algos $(ALGOS) --device $(DEVICE) --print-every-percent 5 --stats-window-episodes 100
 	$(REPORT) --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE)
 
 runvenv: runenv
@@ -56,7 +57,7 @@ roms: install
 
 kaggle-install:
 	$(PIP_SYS) install -U pip setuptools wheel
-	$(PIP_SYS) install -U .
+	$(PIP_SYS) install -e .
 	$(PIP_SYS) install -U "gymnasium[atari]>=0.29.1,<1.3.0"
 	$(PIP_SYS) install -U "autorom[accept-rom-license]"
 	$(PIP_SYS) install -U "moviepy>=1.0.3"
@@ -66,7 +67,7 @@ kaggle-install:
 
 kaggle-runenv: kaggle-install
 	mkdir -p $(ARTIFACTS)
-	$(PY_SYS) -m pacman_rl.cli --db runs.sqlite --total-timesteps $(TOTAL_TIMESTEPS) --algos $(ALGOS) --device $(DEVICE) --print-every-percent 5 --stats-window-episodes 100 --record-video-dir $(ARTIFACTS)/train_videos --video-trigger-steps 50000 --video-length 1800
+	$(PY_SYS) -m pacman_rl.cli --db runs.sqlite --total-timesteps $(STEPS) --algos $(ALGOS) --device $(DEVICE) --print-every-percent 5 --stats-window-episodes 100
 	$(PY_SYS) -m pacman_rl.report --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE)
 
 clean:

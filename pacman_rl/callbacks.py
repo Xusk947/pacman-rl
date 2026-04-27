@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import glob
 import json
 import logging
+import os
 from typing import Any
 
 import numpy as np
@@ -47,6 +49,18 @@ class PacmanSQLiteCallback(BaseCallback):
         print_every_percent: int,
         stats_window_episodes: int,
         telegram: Any | None,
+        milestone_percents: tuple[int, ...] = (),
+        milestone_models_dir: str = "models",
+        milestone_video_dir: str | None = None,
+        milestone_env_id: str = "ALE/Pacman-v5",
+        milestone_seed: int = 0,
+        milestone_frame_stack: int = 4,
+        milestone_device: str = "auto",
+        milestone_episodes: int = 1,
+        milestone_max_steps: int = 3000,
+        milestone_video_length: int = 1500,
+        milestone_render_fps: int = 60,
+        milestone_max_bytes: int = 45 * 1024 * 1024,
     ) -> None:
         if _sb3_import_error is not None:  # pragma: no cover
             raise RuntimeError("stable-baselines3 is required") from _sb3_import_error
@@ -65,6 +79,20 @@ class PacmanSQLiteCallback(BaseCallback):
         self._stats_window_episodes = max(1, int(stats_window_episodes))
         self._telegram = telegram
         self._estimator = PelletTotalEstimator()
+
+        self._milestone_percents = tuple(int(p) for p in milestone_percents if int(p) > 0 and int(p) <= 100)
+        self._milestone_fired: set[int] = set()
+        self._milestone_models_dir = str(milestone_models_dir)
+        self._milestone_video_dir = str(milestone_video_dir) if milestone_video_dir else None
+        self._milestone_env_id = str(milestone_env_id)
+        self._milestone_seed = int(milestone_seed)
+        self._milestone_frame_stack = int(milestone_frame_stack)
+        self._milestone_device = str(milestone_device)
+        self._milestone_episodes = max(1, int(milestone_episodes))
+        self._milestone_max_steps = max(1, int(milestone_max_steps))
+        self._milestone_video_length = max(1, int(milestone_video_length))
+        self._milestone_render_fps = max(1, int(milestone_render_fps))
+        self._milestone_max_bytes = max(1, int(milestone_max_bytes))
 
         self._n_envs = 0
         self._episode_index: np.ndarray | None = None
@@ -194,6 +222,7 @@ class PacmanSQLiteCallback(BaseCallback):
             )
             self._db.commit()
 
+        self._maybe_send_milestone_videos()
         return True
 
     def _append_recent(self, *, episode_return: float, win: int, pellets: int, power_pellets: int, ghosts: int) -> None:
@@ -303,3 +332,71 @@ class PacmanSQLiteCallback(BaseCallback):
             self._telegram.send_or_edit(text)
         except Exception as e:
             logger.error("Telegram update failed: %s", e)
+
+    def _maybe_send_milestone_videos(self) -> None:
+        if not self._telegram:
+            return
+        if not self._milestone_percents or not self._milestone_video_dir:
+            return
+        if self._total_timesteps <= 0:
+            return
+
+        percent = int(100 * min(self.num_timesteps, self._total_timesteps) / max(1, self._total_timesteps))
+        due = [p for p in self._milestone_percents if p not in self._milestone_fired and percent >= p]
+        if not due:
+            return
+
+        try:
+            from pacman_rl.play import PlayArgs, play
+        except Exception as e:
+            logger.error("Milestone video import failed: %s", e)
+            return
+
+        for p in sorted(due):
+            self._milestone_fired.add(p)
+            try:
+                os.makedirs(self._milestone_models_dir, exist_ok=True)
+                checkpoint_path = os.path.join(self._milestone_models_dir, f"{self._run_id}_{self._algo}_milestone_{p}pct.zip")
+                try:
+                    self.model.save(checkpoint_path)
+                except Exception:
+                    continue
+
+                out_dir = os.path.join(self._milestone_video_dir, f"{self._algo}_{self._run_id}", f"{p}pct")
+                os.makedirs(out_dir, exist_ok=True)
+
+                play(
+                    PlayArgs(
+                        model_path=str(checkpoint_path),
+                        env_id=self._milestone_env_id,
+                        seed=self._milestone_seed,
+                        episodes=self._milestone_episodes,
+                        max_steps=self._milestone_max_steps,
+                        frame_stack=self._milestone_frame_stack,
+                        deterministic=True,
+                        device=self._milestone_device,
+                        render_mode="rgb_array",
+                        record_video_dir=out_dir,
+                        video_length=self._milestone_video_length,
+                        video_trigger_steps=1,
+                        render_fps=self._milestone_render_fps,
+                        video_name_prefix=f"{self._algo}_{p}pct",
+                    )
+                )
+
+                videos = sorted(glob.glob(os.path.join(out_dir, "*.mp4")))
+                if not videos:
+                    continue
+
+                video_path = max(videos, key=lambda fp: os.path.getmtime(fp))
+                try:
+                    size = os.path.getsize(video_path)
+                except Exception:
+                    size = 0
+                if size > self._milestone_max_bytes:
+                    continue
+
+                caption = f"{self._algo.upper()} milestone {p}% ({int(self.num_timesteps)}/{int(self._total_timesteps)} steps)"
+                self._telegram.send_video(video_path, caption=caption)
+            except Exception as e:
+                logger.error("Milestone video failed (%s %s%%): %s", self._algo, p, e)

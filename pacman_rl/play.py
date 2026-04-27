@@ -22,6 +22,7 @@ class PlayArgs:
     video_length: int
     video_trigger_steps: int
     render_fps: int
+    video_name_prefix: str
 
 
 def parse_args(argv: list[str] | None = None) -> PlayArgs:
@@ -48,6 +49,7 @@ def parse_args(argv: list[str] | None = None) -> PlayArgs:
     parser.add_argument("--video-length", type=int, default=3000)
     parser.add_argument("--video-trigger-steps", type=int, default=1)
     parser.add_argument("--render-fps", type=int, default=60)
+    parser.add_argument("--video-name-prefix", default="play")
 
     ns = parser.parse_args(argv)
     return PlayArgs(
@@ -64,6 +66,7 @@ def parse_args(argv: list[str] | None = None) -> PlayArgs:
         video_length=int(ns.video_length),
         video_trigger_steps=int(ns.video_trigger_steps),
         render_fps=int(ns.render_fps),
+        video_name_prefix=str(ns.video_name_prefix),
     )
 
 
@@ -99,7 +102,7 @@ def play(args: PlayArgs) -> None:
             video_folder=str(args.record_video_dir),
             record_video_trigger=lambda step: int(step) % max(1, int(args.video_trigger_steps)) == 0,
             video_length=int(args.video_length),
-            name_prefix="play",
+            name_prefix=str(args.video_name_prefix),
         )
 
     venv = VecTransposeImage(venv)
