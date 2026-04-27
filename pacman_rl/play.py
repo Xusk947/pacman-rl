@@ -132,6 +132,23 @@ def play(args: PlayArgs) -> None:
             episodes_done += 1
 
     venv.close()
+    try:
+        del model
+    except Exception:
+        pass
+    try:
+        import gc
+
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def main(argv: list[str] | None = None) -> None:

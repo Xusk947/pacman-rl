@@ -40,13 +40,13 @@ install: venv
 runenv: install
 	mkdir -p $(ARTIFACTS)
 	$(TRAIN) --db runs.sqlite --total-timesteps $(STEPS) --algos $(ALGOS) --device $(DEVICE) --print-every-percent 5 --stats-window-episodes 100
-	$(REPORT) --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE)
+	$(REPORT) --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE) --max-steps $(STEPS)
 
 runvenv: runenv
 
 runtrained: install
 	mkdir -p $(ARTIFACTS)
-	$(TRAINED) --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE) --max-steps $(STEPS)
+	$(TRAINED) --models-dir models --out-dir $(ARTIFACTS) --algos $(ALGOS) --device $(DEVICE) --max-steps $(STEPS)
 
 play: install
 	$(PLAY) --model $(MODEL) --render human --device cuda
@@ -73,11 +73,11 @@ kaggle-install:
 kaggle-runenv: kaggle-install
 	mkdir -p $(ARTIFACTS)
 	$(PY_SYS) -m pacman_rl.cli --db runs.sqlite --total-timesteps $(STEPS) --algos $(ALGOS) --device $(DEVICE) --print-every-percent 5 --stats-window-episodes 100
-	$(PY_SYS) -m pacman_rl.report --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE)
+	$(PY_SYS) -m pacman_rl.report --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE) --max-steps $(STEPS)
 
 kaggle-runtrained: kaggle-install
 	mkdir -p $(ARTIFACTS)
-	$(PY_SYS) -m pacman_rl.trained --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE) --max-steps $(STEPS)
+	$(PY_SYS) -m pacman_rl.trained --models-dir models --out-dir $(ARTIFACTS) --algos $(ALGOS) --device $(DEVICE) --max-steps $(STEPS)
 
 clean:
 	rm -rf $(VENV) __pycache__ .pytest_cache .mypy_cache

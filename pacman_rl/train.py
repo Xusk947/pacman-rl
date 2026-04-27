@@ -125,7 +125,7 @@ def run_train_job(job: TrainJob) -> None:
     milestone_episodes = int(os.environ.get("PACMAN_RL_TG_MILESTONE_EPISODES", "1"))
     milestone_max_steps_default = min(3000, max(1, int(job.total_timesteps)))
     milestone_max_steps = int(os.environ.get("PACMAN_RL_TG_MILESTONE_MAX_STEPS", str(milestone_max_steps_default)))
-    milestone_video_length_default = min(1500, max(1, int(milestone_max_steps)))
+    milestone_video_length_default = min(600, max(1, int(milestone_max_steps)))
     milestone_video_length = int(os.environ.get("PACMAN_RL_TG_MILESTONE_VIDEO_LENGTH", str(milestone_video_length_default)))
     milestone_render_fps = int(os.environ.get("PACMAN_RL_TG_MILESTONE_FPS", "60"))
 
@@ -224,7 +224,7 @@ def run_train_job(job: TrainJob) -> None:
             report_episodes = int(os.environ.get("PACMAN_RL_TG_REPORT_EPISODES", "1"))
             report_max_steps_default = min(5000, max(1, int(job.total_timesteps)))
             report_max_steps = int(os.environ.get("PACMAN_RL_TG_REPORT_MAX_STEPS", str(report_max_steps_default)))
-            report_video_length_default = min(1500, max(1, int(report_max_steps)))
+            report_video_length_default = min(600, max(1, int(report_max_steps)))
             report_video_length = int(os.environ.get("PACMAN_RL_TG_REPORT_VIDEO_LENGTH", str(report_video_length_default)))
             report_render_fps = int(os.environ.get("PACMAN_RL_TG_REPORT_FPS", "60"))
             generate_report(

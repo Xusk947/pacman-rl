@@ -33,7 +33,7 @@ def parse_args(argv: list[str] | None = None) -> ReportArgs:
     parser.add_argument("--frame-stack", type=int, default=4)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default=os.environ.get("PACMAN_RL_DEVICE", "auto"))
-    parser.add_argument("--video-length", type=int, default=3000)
+    parser.add_argument("--video-length", type=int, default=600)
     parser.add_argument("--render-fps", type=int, default=60)
     ns = parser.parse_args(argv)
     return ReportArgs(
@@ -62,8 +62,18 @@ def _fetch_runs(db_path: str) -> list[dict[str, Any]]:
         if ended_col is None:
             rows = con.execute("SELECT run_id, algo FROM runs ORDER BY rowid ASC").fetchall()
         else:
-            rows = con.execute(f"SELECT run_id, algo FROM runs WHERE {ended_col} IS NOT NULL ORDER BY rowid ASC").fetchall()
-        return [{"run_id": str(r[0]), "algo": str(r[1])} for r in rows]
+            rows = con.execute(f"SELECT run_id, algo FROM runs WHERE {ended_col} IS NOT NULL ORDER BY rowid DESC").fetchall()
+
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for run_id, algo in rows:
+            a = str(algo).lower()
+            if a in seen:
+                continue
+            seen.add(a)
+            out.append({"run_id": str(run_id), "algo": str(algo)})
+        out.reverse()
+        return out
     finally:
         con.close()
 
