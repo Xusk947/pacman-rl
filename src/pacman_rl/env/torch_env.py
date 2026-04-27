@@ -44,6 +44,7 @@ class TorchPacmanEnv:
         for i, lay in enumerate(layouts):
             for r in range(self.height):
                 if r >= lay.height:
+                    self._walls[i, r] = True
                     continue
                 row = lay.rows[r]
                 for c in range(self.width):
@@ -59,12 +60,17 @@ class TorchPacmanEnv:
             self._pac0[i] = torch.tensor(list(lay.pacman_spawn), dtype=torch.int64)
             for j, g in enumerate(("B", "P", "I", "C")):
                 self._ghost0[i, j] = torch.tensor(list(lay.ghost_spawns[g]), dtype=torch.int64)
+            if lay.width < self.width:
+                self._walls[i, :, lay.width :] = True
+
+        self._wrap_rows0 = (~self._walls[:, :, 0]) & (~self._walls[:, :, self.width - 1])
 
         self._walls = self._walls.to(self.device)
         self._pellets0 = self._pellets0.to(self.device)
         self._power0 = self._power0.to(self.device)
         self._pac0 = self._pac0.to(self.device)
         self._ghost0 = self._ghost0.to(self.device)
+        self._wrap_rows0 = self._wrap_rows0.to(self.device)
 
         self.reset()
 
@@ -82,6 +88,7 @@ class TorchPacmanEnv:
         self.walls = self._walls[self.layout_idx]
         self.pellets = self._pellets0[self.layout_idx].clone()
         self.power = self._power0[self.layout_idx].clone()
+        self.wrap_rows = self._wrap_rows0[self.layout_idx]
 
         self.pacman = self._pac0[self.layout_idx].clone()
         self.ghosts = self._ghost0[self.layout_idx].clone()
@@ -104,6 +111,7 @@ class TorchPacmanEnv:
         self.walls[idx] = self._walls[self.layout_idx[idx]]
         self.pellets[idx] = self._pellets0[self.layout_idx[idx]].clone()
         self.power[idx] = self._power0[self.layout_idx[idx]].clone()
+        self.wrap_rows[idx] = self._wrap_rows0[self.layout_idx[idx]]
         self.pacman[idx] = self._pac0[self.layout_idx[idx]].clone()
         self.ghosts[idx] = self._ghost0[self.layout_idx[idx]].clone()
         self.ghosts_home[idx] = self._ghost0[self.layout_idx[idx]].clone()
@@ -243,7 +251,37 @@ class TorchPacmanEnv:
     def _clip(self, pos: torch.Tensor) -> torch.Tensor:
         pos = pos.clone()
         pos[..., 0] = pos[..., 0].clamp(0, self.height - 1)
-        pos[..., 1] = pos[..., 1].clamp(0, self.width - 1)
+        w = int(self.width)
+
+        if pos.dim() == 2 and pos.shape == (self.batch_size, 2):
+            b = self.batch_size
+            br = torch.arange(b, device=self.device)
+            row = pos[:, 0]
+            col = pos[:, 1]
+            out_left = col < 0
+            out_right = col >= w
+            allow = self.wrap_rows[br, row]
+            col = torch.where(out_left & allow, torch.full_like(col, w - 1), col)
+            col = torch.where(out_right & allow, torch.zeros_like(col), col)
+            col = torch.where((out_left | out_right) & (~allow), col.clamp(0, w - 1), col)
+            pos[:, 1] = col
+            return pos
+
+        if pos.dim() == 3 and pos.shape[0] == self.batch_size and pos.shape[-1] == 2:
+            b = self.batch_size
+            row = pos[:, :, 0]
+            col = pos[:, :, 1]
+            out_left = col < 0
+            out_right = col >= w
+            br = torch.arange(b, device=self.device)[:, None].expand_as(row)
+            allow = self.wrap_rows[br, row]
+            col = torch.where(out_left & allow, torch.full_like(col, w - 1), col)
+            col = torch.where(out_right & allow, torch.zeros_like(col), col)
+            col = torch.where((out_left | out_right) & (~allow), col.clamp(0, w - 1), col)
+            pos[:, :, 1] = col
+            return pos
+
+        pos[..., 1] = pos[..., 1].clamp(0, w - 1)
         return pos
 
     def _delta(self, act: torch.Tensor) -> torch.Tensor:
