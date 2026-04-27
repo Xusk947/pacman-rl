@@ -38,7 +38,15 @@ class SqliteLogger:
 
     def close(self) -> None:
         try:
+            self.checkpoint(truncate=True)
             self._conn.close()
+        except Exception:
+            pass
+ 
+    def checkpoint(self, *, truncate: bool = False) -> None:
+        mode = "TRUNCATE" if truncate else "PASSIVE"
+        try:
+            self._conn.execute(f"PRAGMA wal_checkpoint({mode});")
         except Exception:
             pass
 
