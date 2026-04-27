@@ -19,6 +19,7 @@ dependencies = [
 pacman-rl-train = "pacman_rl.cli:main"
 pacman-rl-play = "pacman_rl.play:main"
 pacman-rl-report = "pacman_rl.report:main"
+pacman-rl-trained = "pacman_rl.trained:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

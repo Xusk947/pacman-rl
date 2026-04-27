@@ -130,6 +130,7 @@ def run_train_job(job: TrainJob) -> None:
     milestone_render_fps = int(os.environ.get("PACMAN_RL_TG_MILESTONE_FPS", "60"))
 
     db = SQLiteLogger(job.db_path)
+    saved_models: list[str] = []
     try:
         if telegram and telegram.enabled:
             telegram.send_or_edit(f"training steps 0/{job.total_timesteps}\nstage 0/{len(job.algos)}")
@@ -195,6 +196,7 @@ def run_train_job(job: TrainJob) -> None:
                     model_path = os.path.join(job.models_dir, f"{run_id}_{algo}.zip")
                     try:
                         model.save(model_path)
+                        saved_models.append(str(model_path))
                     except Exception:
                         pass
             finally:
@@ -266,6 +268,25 @@ def run_train_job(job: TrainJob) -> None:
                 else:
                     failed_videos += 1
 
+            sent_models = 0
+            skipped_models = 0
+            failed_models = 0
+            for mp in saved_models:
+                try:
+                    size = os.path.getsize(mp)
+                except Exception:
+                    size = 0
+                if size <= 0:
+                    failed_models += 1
+                    continue
+                if size > max_bytes:
+                    skipped_models += 1
+                    continue
+                if telegram.send_document(mp, caption=os.path.basename(mp)):
+                    sent_models += 1
+                else:
+                    failed_models += 1
+
             db_sent = False
             try:
                 if os.path.getsize(job.db_path) <= max_bytes:
@@ -274,7 +295,7 @@ def run_train_job(job: TrainJob) -> None:
                 db_sent = False
 
             telegram.send_or_edit(
-                f"done\nvideos: sent={sent_videos}, skipped(>limit)={skipped_videos}, failed={failed_videos}\ndb: {'sent' if db_sent else 'not sent'}"
+                f"done\nvideos: sent={sent_videos}, skipped(>limit)={skipped_videos}, failed={failed_videos}\nmodels: sent={sent_models}, skipped(>limit)={skipped_models}, failed={failed_models}\ndb: {'sent' if db_sent else 'not sent'}"
             )
         except Exception as e:
             logger.error("Telegram finalization failed: %s", e)

@@ -4,6 +4,7 @@ PIP := $(VENV)/bin/pip
 TRAIN := $(VENV)/bin/pacman-rl-train
 PLAY := $(VENV)/bin/pacman-rl-play
 REPORT := $(VENV)/bin/pacman-rl-report
+TRAINED := $(VENV)/bin/pacman-rl-trained
 PY_SYS ?= python3
 PIP_SYS ?= $(PY_SYS) -m pip
 MODEL ?=
@@ -13,10 +14,10 @@ STEPS ?= $(TOTAL_TIMESTEPS)
 ALGOS ?= ppo a2c dqn
 DEVICE ?= cuda
 
-.PHONY: venv install runenv runvenv test clean
+.PHONY: venv install runenv runvenv runtrained test clean
 .PHONY: sysdeps roms
 .PHONY: play playrgb
-.PHONY: kaggle-install kaggle-runenv
+.PHONY: kaggle-install kaggle-runenv kaggle-runtrained
 
 venv: $(PY)
 
@@ -42,6 +43,10 @@ runenv: install
 	$(REPORT) --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE)
 
 runvenv: runenv
+
+runtrained: install
+	mkdir -p $(ARTIFACTS)
+	$(TRAINED) --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE) --max-steps $(STEPS)
 
 play: install
 	$(PLAY) --model $(MODEL) --render human --device cuda
@@ -69,6 +74,10 @@ kaggle-runenv: kaggle-install
 	mkdir -p $(ARTIFACTS)
 	$(PY_SYS) -m pacman_rl.cli --db runs.sqlite --total-timesteps $(STEPS) --algos $(ALGOS) --device $(DEVICE) --print-every-percent 5 --stats-window-episodes 100
 	$(PY_SYS) -m pacman_rl.report --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE)
+
+kaggle-runtrained: kaggle-install
+	mkdir -p $(ARTIFACTS)
+	$(PY_SYS) -m pacman_rl.trained --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE) --max-steps $(STEPS)
 
 clean:
 	rm -rf $(VENV) __pycache__ .pytest_cache .mypy_cache
