@@ -94,7 +94,7 @@ class SqliteLogger:
                   win_rate, death_rate,
                   loss, policy_loss, value_loss, entropy, approx_kl, fps, elapsed_s
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     str(row.algo),

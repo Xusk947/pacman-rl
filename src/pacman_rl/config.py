@@ -37,4 +37,5 @@ class LogConfig:
     sqlite_flush_every_steps: int = 1000
     telegram_progress_every_steps: int = 100
     telegram_db_every_steps: int = 2500
-
+    telegram_progress_every_percent: int = 5
+    telegram_db_every_percent: int = 25
