@@ -24,6 +24,14 @@ Override defaults:
 !make kaggle-runenv TOTAL_TIMESTEPS=2000000 DEVICE=cuda
 ```
 
+Telegram test (short run + short report video):
+
+```bash
+%env PACMAN_RL_TG_REPORT_MAX_STEPS=1000
+%env PACMAN_RL_TG_REPORT_VIDEO_LENGTH=300
+!make kaggle-runenv TOTAL_TIMESTEPS=5000 ALGOS="ppo" DEVICE=cuda
+```
+
 ## Install
 
 Atari environments require ROM support. The simplest path is:

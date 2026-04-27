@@ -171,18 +171,22 @@ def run_train_job(job: TrainJob) -> None:
             from pacman_rl.report import ReportArgs, generate_report
 
             out_dir = "artifacts"
+            report_episodes = int(os.environ.get("PACMAN_RL_TG_REPORT_EPISODES", "1"))
+            report_max_steps = int(os.environ.get("PACMAN_RL_TG_REPORT_MAX_STEPS", "5000"))
+            report_video_length = int(os.environ.get("PACMAN_RL_TG_REPORT_VIDEO_LENGTH", "1500"))
+            report_render_fps = int(os.environ.get("PACMAN_RL_TG_REPORT_FPS", "60"))
             generate_report(
                 ReportArgs(
                     db_path=job.db_path,
                     models_dir=job.models_dir,
                     out_dir=out_dir,
-                    episodes=1,
-                    max_steps=5_000,
+                    episodes=report_episodes,
+                    max_steps=report_max_steps,
                     frame_stack=job.frame_stack,
                     deterministic=True,
                     device=job.device,
-                    video_length=1500,
-                    render_fps=60,
+                    video_length=report_video_length,
+                    render_fps=report_render_fps,
                 )
             )
 
