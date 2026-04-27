@@ -71,3 +71,16 @@ class TelegramReporter:
                 time.sleep(float(e.retry_after_s) + 0.5)
         send_document(target=self.target, file_path=db_path, caption=caption)
 
+    def send_gif(self, *, gif_path: Path, caption: str = "") -> None:
+        if self.dry_run:
+            self.events.append({"type": "gif", "path": str(gif_path), "caption": caption})
+            return
+        if not gif_path.exists():
+            return
+        for _ in range(3):
+            try:
+                send_document(target=self.target, file_path=gif_path, caption=caption)
+                return
+            except TelegramRateLimitError as e:
+                time.sleep(float(e.retry_after_s) + 0.5)
+        send_document(target=self.target, file_path=gif_path, caption=caption)

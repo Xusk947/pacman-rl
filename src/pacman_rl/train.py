@@ -15,6 +15,7 @@ from pacman_rl.layouts import load_layouts_from_dir
 from pacman_rl.models import QNetwork, SharedCNNActorCritic
 from pacman_rl.rl import ReplayBuffer, a2c_update, compute_gae, dqn_update, ppo_update
 from pacman_rl.telemetry import SqliteLogger, TelegramReporter, telegram_target_auto
+from pacman_rl.telemetry.demo_gif import make_demo_gif
 from pacman_rl.telemetry.sqlite_logger import MetricsRow
 from pacman_rl.telemetry.telegram_api import TelegramTarget
 from pacman_rl.utils import resolve_device
@@ -253,6 +254,7 @@ def _maybe_report(
         next_report_at[0] += max(1, int(total_steps * pct_step / 100))
 
     if combined_step >= next_db_at[0]:
+        sqlite.checkpoint(truncate=True)
         reporter.send_sqlite(db_path=sqlite_path, caption=f"metrics step={combined_step}")
         next_db_at[0] += max(1, int(total_steps * db_step / 100))
 
@@ -522,6 +524,24 @@ def main() -> None:
                         + f"{float(st.fps or 0.0):.0f}"
                     )
 
+        if reporter is not None:
+            sqlite.checkpoint(truncate=True)
+            demo_dir = Path(args.run_dir) / "demos"
+            demo_path = demo_dir / f"demo_{algo}.gif"
+            layout0 = layouts[0]
+            if algo in ("ppo", "a2c"):
+                def pac_action(obs: torch.Tensor) -> torch.Tensor:
+                    with torch.no_grad():
+                        out = model(obs)
+                        return out.logits.argmax(dim=1)
+            else:
+                def pac_action(obs: torch.Tensor) -> torch.Tensor:
+                    with torch.no_grad():
+                        return q(obs).argmax(dim=1)
+
+            make_demo_gif(layout=layout0, device=device, pacman_action=pac_action, out_path=demo_path)
+            reporter.send_gif(gif_path=demo_path, caption=f"{algo.upper()} demo")
+
     _maybe_report(
         reporter=reporter,
         sqlite=sqlite,
@@ -535,6 +555,7 @@ def main() -> None:
         next_report_at=[0],
         next_db_at=[total_steps_all + 1],
     )
+    sqlite.checkpoint(truncate=True)
     sqlite.close()
 
 
