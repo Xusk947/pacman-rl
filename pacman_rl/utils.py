@@ -12,6 +12,36 @@ def pick_device(requested: str) -> str:
     def _has_nvidia_device_files() -> bool:
         return Path("/dev/nvidiactl").exists() or Path("/dev/nvidia0").exists()
 
+    def _cuda_conv_works() -> bool:
+        try:
+            if not _has_nvidia_device_files():
+                return False
+            if not torch.cuda.is_available():
+                return False
+            _ = torch.cuda.device_count()
+
+            import torch.nn as nn
+
+            x = torch.randn((1, 4, 84, 84), device="cuda", dtype=torch.float32)
+            conv = nn.Conv2d(4, 32, kernel_size=8, stride=4).to(device="cuda", dtype=torch.float32)
+            _ = conv(x)
+            return True
+        except Exception as e:
+            msg = str(e)
+            if "unable to find an engine" in msg.lower():
+                try:
+                    torch.backends.cudnn.enabled = False
+                    import torch.nn as nn
+
+                    x = torch.randn((1, 4, 84, 84), device="cuda", dtype=torch.float32)
+                    conv = nn.Conv2d(4, 32, kernel_size=8, stride=4).to(device="cuda", dtype=torch.float32)
+                    _ = conv(x)
+                    print("CUDA conv engine failed; running with cuDNN disabled.", flush=True)
+                    return True
+                except Exception:
+                    return False
+            return False
+
     def _cuda_works() -> bool:
         try:
             if not _has_nvidia_device_files():
@@ -22,7 +52,7 @@ def pick_device(requested: str) -> str:
             x = torch.randn((8, 8), device="cuda", requires_grad=True)
             y = (x @ x).sum()
             y.backward()
-            return True
+            return _cuda_conv_works()
         except Exception:
             return False
 
