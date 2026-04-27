@@ -6,6 +6,9 @@ PLAY := $(VENV)/bin/pacman-rl-play
 REPORT := $(VENV)/bin/pacman-rl-report
 MODEL ?=
 ARTIFACTS ?= artifacts
+TOTAL_TIMESTEPS ?= 2000000
+ALGOS ?= ppo a2c dqn
+DEVICE ?= cuda
 
 .PHONY: venv install runenv runvenv test clean
 .PHONY: sysdeps roms
@@ -31,8 +34,8 @@ install: venv
 
 runenv: install
 	mkdir -p $(ARTIFACTS)
-	$(TRAIN) --db runs.sqlite --total-timesteps 200000 --algos ppo a2c dqn --device cuda --print-every-percent 5 --stats-window-episodes 100 --record-video-dir $(ARTIFACTS)/train_videos --video-trigger-steps 50000 --video-length 1800
-	$(REPORT) --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device cuda
+	$(TRAIN) --db runs.sqlite --total-timesteps $(TOTAL_TIMESTEPS) --algos $(ALGOS) --device $(DEVICE) --print-every-percent 5 --stats-window-episodes 100 --record-video-dir $(ARTIFACTS)/train_videos --video-trigger-steps 50000 --video-length 1800
+	$(REPORT) --db runs.sqlite --models-dir models --out-dir $(ARTIFACTS) --device $(DEVICE)
 
 runvenv: runenv
 

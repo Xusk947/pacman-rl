@@ -18,6 +18,12 @@ CLI that trains `gymnasium.make("ALE/Pacman-v5")` with 3 algorithms (PPO, A2C, D
 
 If `BOT_TOKEN` and `USER_ID` are present, the training will send an editable progress message to Telegram and, after finishing, send videos + SQLite DB.
 
+Override defaults:
+
+```bash
+!make runenv TOTAL_TIMESTEPS=2000000 DEVICE=cuda
+```
+
 ## Install
 
 Atari environments require ROM support. The simplest path is:
