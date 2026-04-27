@@ -59,14 +59,40 @@ class TelegramReporter:
         try:
             import requests  # type: ignore
 
-            if files:
-                resp = requests.post(url, data=data or {}, files=files, timeout=30)
-            else:
-                resp = requests.post(url, json=data or {}, timeout=30)
-            if resp.status_code != 200:
-                logger.error("Telegram HTTP error %s: %s", resp.status_code, resp.text[:2000])
+            for attempt in range(3):
+                if files:
+                    resp = requests.post(url, data=data or {}, files=files, timeout=60)
+                else:
+                    resp = requests.post(url, json=data or {}, timeout=30)
+
+                try:
+                    payload = resp.json()
+                except Exception:
+                    payload = None
+
+                retry_after = None
+                if isinstance(payload, dict):
+                    params = payload.get("parameters")
+                    if isinstance(params, dict) and "retry_after" in params:
+                        try:
+                            retry_after = int(params["retry_after"])
+                        except Exception:
+                            retry_after = None
+
+                if resp.status_code == 200 and isinstance(payload, dict) and payload.get("ok"):
+                    return payload
+
+                if resp.status_code == 429 and retry_after is not None and attempt < 2:
+                    time.sleep(max(1, retry_after))
+                    continue
+
+                if resp.status_code != 200:
+                    logger.error("Telegram HTTP error %s: %s", resp.status_code, resp.text[:2000])
+                elif isinstance(payload, dict):
+                    logger.error("Telegram API error: %s", json.dumps(payload, ensure_ascii=False)[:2000])
+                else:
+                    logger.error("Telegram API error: invalid response")
                 return None
-            return resp.json()
         except Exception:
             pass
 
@@ -121,11 +147,15 @@ class TelegramReporter:
         if not self._config.enabled:
             return False
 
-        now = time.time()
         text_hash = hash(text)
+        now = time.time()
+        if now - self._last_edit_time < self._min_edit_interval:
+            time.sleep(self._min_edit_interval - (now - self._last_edit_time))
+
+        now = time.time()
         if message_id == self._last_message_id and text_hash == self._last_text_hash:
-            if now - self._last_edit_time < self._min_edit_interval:
-                return True
+            self._last_edit_time = now
+            return True
 
         resp = self._post(
             "editMessageText",
@@ -153,32 +183,16 @@ class TelegramReporter:
             return False
 
         try:
-            import requests  # type: ignore
-
             with open(p, "rb") as f:
-                resp = requests.post(
-                    f"https://api.telegram.org/bot{self._config.bot_token}/sendVideo",
-                    data={"chat_id": self._config.chat_id, "caption": caption, "parse_mode": parse_mode},
+                resp = self._post(
+                    "sendVideo",
+                    {"chat_id": self._config.chat_id, "caption": caption, "parse_mode": parse_mode},
                     files={"video": (p.name, f, "video/mp4")},
-                    timeout=60,
                 )
-            return bool(resp.status_code == 200 and resp.json().get("ok"))
-        except Exception:
-            pass
-
-        try:
-            with open(p, "rb") as f:
-                content = f.read()
+            return bool(resp and resp.get("ok"))
         except Exception as e:
-            logger.error("Failed to read video: %s", e)
+            logger.error("send_video failed: %s", e)
             return False
-
-        resp = self._post(
-            "sendVideo",
-            {"chat_id": self._config.chat_id, "caption": caption, "parse_mode": parse_mode},
-            files={"video": (p.name, content, "video/mp4")},
-        )
-        return bool(resp and resp.get("ok"))
 
     def send_document(self, file_path: str, caption: str = "", *, parse_mode: str = "HTML") -> bool:
         if not self._config.enabled:
@@ -190,32 +204,16 @@ class TelegramReporter:
             return False
 
         try:
-            import requests  # type: ignore
-
             with open(p, "rb") as f:
-                resp = requests.post(
-                    f"https://api.telegram.org/bot{self._config.bot_token}/sendDocument",
-                    data={"chat_id": self._config.chat_id, "caption": caption, "parse_mode": parse_mode},
+                resp = self._post(
+                    "sendDocument",
+                    {"chat_id": self._config.chat_id, "caption": caption, "parse_mode": parse_mode},
                     files={"document": (p.name, f, "application/octet-stream")},
-                    timeout=60,
                 )
-            return bool(resp.status_code == 200 and resp.json().get("ok"))
-        except Exception:
-            pass
-
-        try:
-            with open(p, "rb") as f:
-                content = f.read()
+            return bool(resp and resp.get("ok"))
         except Exception as e:
-            logger.error("Failed to read document: %s", e)
+            logger.error("send_document failed: %s", e)
             return False
-
-        resp = self._post(
-            "sendDocument",
-            {"chat_id": self._config.chat_id, "caption": caption, "parse_mode": parse_mode},
-            files={"document": (p.name, content, "application/octet-stream")},
-        )
-        return bool(resp and resp.get("ok"))
 
     def format_progress(self, algo: str, current_step: int, total_steps: int, *, model_index: int, model_total: int, extra: str = "") -> str:
         percent = int(100 * min(current_step, total_steps) / max(1, total_steps))

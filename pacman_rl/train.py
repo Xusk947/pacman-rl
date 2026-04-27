@@ -192,12 +192,35 @@ def run_train_job(job: TrainJob) -> None:
 
             telegram.send_or_edit("обучение завершено, отправляю артефакты…")
 
+            max_bytes = int(os.environ.get("PACMAN_RL_TG_MAX_BYTES", str(45 * 1024 * 1024)))
+            sent_videos = 0
+            skipped_videos = 0
+            failed_videos = 0
+
             videos = sorted(glob.glob(os.path.join(out_dir, "videos", "**", "*.mp4"), recursive=True))
             for vp in videos:
-                telegram.send_video(vp, caption=os.path.basename(vp))
+                try:
+                    size = os.path.getsize(vp)
+                except Exception:
+                    size = 0
+                if size > max_bytes:
+                    skipped_videos += 1
+                    continue
+                if telegram.send_video(vp, caption=os.path.basename(vp)):
+                    sent_videos += 1
+                else:
+                    failed_videos += 1
 
-            telegram.send_document(job.db_path, caption="runs.sqlite")
-            telegram.send_or_edit("готово")
+            db_sent = False
+            try:
+                if os.path.getsize(job.db_path) <= max_bytes:
+                    db_sent = telegram.send_document(job.db_path, caption=os.path.basename(job.db_path))
+            except Exception:
+                db_sent = False
+
+            telegram.send_or_edit(
+                f"готово\nвидео: отправлено={sent_videos}, пропущено(>лимит)={skipped_videos}, ошибка={failed_videos}\nбаза: {'отправлена' if db_sent else 'не отправлена'}"
+            )
         except Exception as e:
             logger.error("Telegram finalization failed: %s", e)
             try:
