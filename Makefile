@@ -26,6 +26,7 @@ install: venv
 	$(PIP) install -U "autorom[accept-rom-license]"
 	$(PIP) install -U "moviepy>=1.0.3"
 	$(PIP) install -U "matplotlib>=3.8"
+	$(PIP) install -U "requests>=2.31"
 	$(VENV)/bin/AutoROM --accept-license
 
 runenv: install

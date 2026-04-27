@@ -5,3 +5,4 @@ stable-baselines3>=2.8.0
 torch>=2.0
 moviepy>=1.0.3
 matplotlib>=3.8
+requests>=2.31

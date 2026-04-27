@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+import glob
+import logging
 from dataclasses import dataclass, asdict
 from typing import Any
 
 from pacman_rl.callbacks import PacmanSQLiteCallback
 from pacman_rl.db import SQLiteLogger
-from pacman_rl.env import make_pacman_env
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,8 @@ class TrainJob:
 
 def _build_vec_env(*, env_id: str, seed: int, n_envs: int, frame_stack: int, record_video_dir: str | None, video_length: int, video_trigger_steps: int) -> Any:
     from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack, VecTransposeImage
+
+    from pacman_rl.env import make_pacman_env
 
     env_fns = [make_pacman_env(env_id, seed=seed + i) for i in range(n_envs)]
     venv = DummyVecEnv(env_fns)
@@ -81,9 +86,21 @@ def _make_model(algo: str, *, env: Any, device: str, seed: int) -> Any:
 
 
 def run_train_job(job: TrainJob) -> None:
+    telegram = None
+    try:
+        from pacman_rl.telegram_reporter import TelegramReporter, detect_telegram_config
+
+        telegram = TelegramReporter(detect_telegram_config())
+    except Exception:
+        telegram = None
+
     db = SQLiteLogger(job.db_path)
     try:
-        for algo in job.algos:
+        if telegram and telegram.enabled:
+            telegram.send_or_edit(f"обучаем модель 0/{job.total_timesteps}\nэтап 0/{len(job.algos)}")
+
+        model_total = max(1, len(job.algos))
+        for model_index, algo in enumerate(job.algos, start=1):
             n_envs = 1 if algo.lower() == "dqn" else max(1, int(job.n_envs))
             venv = _build_vec_env(
                 env_id=job.env_id,
@@ -110,12 +127,15 @@ def run_train_job(job: TrainJob) -> None:
                     db=db,
                     run_id=run_id,
                     algo=algo,
+                    model_index=model_index,
+                    model_total=model_total,
                     total_timesteps=job.total_timesteps,
                     win_score_threshold=job.win_score_threshold,
                     log_every_steps=job.log_every_steps,
                     estimate_total_pellets=True,
                     print_every_percent=job.print_every_percent,
                     stats_window_episodes=job.stats_window_episodes,
+                    telegram=telegram if (telegram and telegram.enabled) else None,
                 )
                 model = _make_model(algo, env=venv, device=job.device, seed=job.seed)
 
@@ -136,5 +156,47 @@ def run_train_job(job: TrainJob) -> None:
                     except Exception:
                         pass
                 venv.close()
+    except Exception as e:
+        if telegram and telegram.enabled:
+            try:
+                telegram.send_or_edit(f"ошибка обучения: {e}")
+            except Exception:
+                pass
+        raise
     finally:
         db.close()
+
+    if telegram and telegram.enabled:
+        try:
+            from pacman_rl.report import ReportArgs, generate_report
+
+            out_dir = "artifacts"
+            generate_report(
+                ReportArgs(
+                    db_path=job.db_path,
+                    models_dir=job.models_dir,
+                    out_dir=out_dir,
+                    episodes=1,
+                    max_steps=5_000,
+                    frame_stack=job.frame_stack,
+                    deterministic=True,
+                    device=job.device,
+                    video_length=1500,
+                    render_fps=60,
+                )
+            )
+
+            telegram.send_or_edit("обучение завершено, отправляю артефакты…")
+
+            videos = sorted(glob.glob(os.path.join(out_dir, "videos", "**", "*.mp4"), recursive=True))
+            for vp in videos:
+                telegram.send_video(vp, caption=os.path.basename(vp))
+
+            telegram.send_document(job.db_path, caption="runs.sqlite")
+            telegram.send_or_edit("готово")
+        except Exception as e:
+            logger.error("Telegram finalization failed: %s", e)
+            try:
+                telegram.send_or_edit(f"ошибка при отправке артефактов: {e}")
+            except Exception:
+                pass

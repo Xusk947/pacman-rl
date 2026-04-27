@@ -2,6 +2,25 @@
 
 CLI that trains `gymnasium.make("ALE/Pacman-v5")` with 3 algorithms (PPO, A2C, DQN) and logs episode + training metrics into SQLite.
 
+## Kaggle
+
+1. Create a Kaggle Notebook with Internet enabled and (optionally) GPU enabled.
+2. Add secrets or environment variables:
+   - `BOT_TOKEN` (Telegram bot token)
+   - `USER_ID` (your chat id)
+3. In a notebook cell:
+
+```bash
+!git clone https://github.com/Xusk947/pacman-rl.git
+%cd pacman-rl
+!pip install -r requirements.txt
+!pip install "gymnasium[atari]>=0.29.1,<1.3.0" "autorom[accept-rom-license]"
+!AutoROM --accept-license
+!make runenv
+```
+
+If `BOT_TOKEN` and `USER_ID` are present, the training will send an editable progress message to Telegram and, after finishing, send videos + SQLite DB.
+
 ## Install
 
 Atari environments require ROM support. The simplest path is:
@@ -9,13 +28,12 @@ Atari environments require ROM support. The simplest path is:
 On Arch/CachyOS you also need the HDF5 runtime library for `ale-py`:
 
 ```bash
-sudo pacman -S --needed hdf5 vtk
+sudo pacman -S --needed hdf5 vtk ffmpeg
 ```
 
 ```bash
 pip install -r requirements.txt
 pip install "gymnasium[atari]>=0.29.1,<1.3.0" "autorom[accept-rom-license]"
-pip install "moviepy>=1.0.3"
 AutoROM --accept-license
 ```
 

@@ -1,28 +1,16 @@
+.venv/
 __pycache__/
-*.py[cod]
-*.so
-*.egg-info/
+*.pyc
 .pytest_cache/
 .mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
 
-.venv/
-venv/
+artifacts/
+models/
+*.sqlite
+*.sqlite-*
+runs.sqlite*
 
-.idea/
-.vscode/
+pacman_rl.egg-info/
+*.egg-info/
 
-dist/
-build/
-
-runs/
-*.pt
-*.pth
-*.ckpt
-*.zip
-*.xlsx
-
-.env
-.env.*
+.DS_Store
