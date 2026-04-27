@@ -13,7 +13,7 @@ CLI that trains `gymnasium.make("ALE/Pacman-v5")` with 3 algorithms (PPO, A2C, D
 ```bash
 !git clone https://github.com/Xusk947/pacman-rl.git
 %cd pacman-rl
-!make runenv
+!make kaggle-runenv
 ```
 
 If `BOT_TOKEN` and `USER_ID` are present, the training will send an editable progress message to Telegram and, after finishing, send videos + SQLite DB.
@@ -21,7 +21,7 @@ If `BOT_TOKEN` and `USER_ID` are present, the training will send an editable pro
 Override defaults:
 
 ```bash
-!make runenv TOTAL_TIMESTEPS=2000000 DEVICE=cuda
+!make kaggle-runenv TOTAL_TIMESTEPS=2000000 DEVICE=cuda
 ```
 
 ## Install
