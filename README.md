@@ -13,9 +13,6 @@ CLI that trains `gymnasium.make("ALE/Pacman-v5")` with 3 algorithms (PPO, A2C, D
 ```bash
 !git clone https://github.com/Xusk947/pacman-rl.git
 %cd pacman-rl
-!pip install -r requirements.txt
-!pip install "gymnasium[atari]>=0.29.1,<1.3.0" "autorom[accept-rom-license]"
-!AutoROM --accept-license
 !make runenv
 ```
 
