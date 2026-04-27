@@ -10,89 +10,251 @@ from torch.distributions import Categorical
 
 from pacman_rl.config import EnvConfig, LogConfig, PPOConfig
 from pacman_rl.env import TorchPacmanEnv
+from pacman_rl.ghosts import ClassicGhostPolicy
 from pacman_rl.layouts import load_layouts_from_dir
-from pacman_rl.models import SharedCNNActorCritic
-from pacman_rl.rl import compute_gae, ppo_update
-from pacman_rl.telemetry import SqliteLogger, TelegramReporter, telegram_target_from_env
-from pacman_rl.telemetry.telegram_api import TelegramTarget
+from pacman_rl.models import QNetwork, SharedCNNActorCritic
+from pacman_rl.rl import ReplayBuffer, a2c_update, compute_gae, dqn_update, ppo_update
+from pacman_rl.telemetry import SqliteLogger, TelegramReporter, telegram_target_auto
 from pacman_rl.telemetry.sqlite_logger import MetricsRow
+from pacman_rl.telemetry.telegram_api import TelegramTarget
 from pacman_rl.utils import resolve_device
 
 
-@dataclass(frozen=True)
-class TrainConfig:
-    layout_dir: Path
-    run_dir: Path
-    device: str
-    batch_size: int
-    total_steps: int
-    seed: int
-    telegram: bool
-    telegram_dry_run: bool
+@dataclass
+class AlgoState:
+    algo: str
+    step: int = 0
+    pellets: int = 0
+    power: int = 0
+    avg_reward: float | None = None
+    win_rate: float | None = None
+    death_rate: float | None = None
+    fps: float | None = None
 
 
-def _sample(model: SharedCNNActorCritic, obs_flat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    out = model(obs_flat)
+def _fmt_step(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
+def _fmt_pct(done: int, total: int) -> int:
+    if total <= 0:
+        return 0
+    return int(min(100.0, max(0.0, 100.0 * float(done) / float(total))))
+
+
+def _summary_text(*, pct: int, step: int, total: int, elapsed_s: float, states: list[AlgoState]) -> str:
+    lines: list[str] = []
+    lines.append(f"Progress: {pct}%  total_step={_fmt_step(step)} / {_fmt_step(total)}  elapsed={int(elapsed_s)}s")
+    lines.append("")
+    for st in states:
+        lines.append(f"**{st.algo.upper()}**")
+        lines.append(f"step: {_fmt_step(st.step)}")
+        lines.append(f"pellets: {st.pellets}")
+        lines.append(f"power: {st.power}")
+        lines.append(f"avg_reward: {('-' if st.avg_reward is None else f'{st.avg_reward:.3f}')}")
+        lines.append(f"win_rate: {('-' if st.win_rate is None else f'{st.win_rate * 100.0:.1f}%')}")
+        lines.append(f"death_rate: {('-' if st.death_rate is None else f'{st.death_rate * 100.0:.1f}%')}")
+        lines.append(f"fps: {('-' if st.fps is None else f'{st.fps:.0f}')}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _sample_ac(model: SharedCNNActorCritic, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    out = model(obs)
     dist = Categorical(logits=out.logits)
-    action = dist.sample()
-    logp = dist.log_prob(action)
-    return action, logp, out.value
+    act = dist.sample()
+    logp = dist.log_prob(act)
+    return act, logp, out.value
 
 
-def _collect_rollout(
-    *,
-    env: TorchPacmanEnv,
-    model: SharedCNNActorCritic,
-    cfg: PPOConfig,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
-    t = int(cfg.rollout_steps)
+@dataclass(frozen=True)
+class RolloutAC:
+    obs: torch.Tensor
+    actions: torch.Tensor
+    logp: torch.Tensor
+    values: torch.Tensor
+    rewards: torch.Tensor
+    dones: torch.Tensor
+    last_values: torch.Tensor
+    pellets_eaten: int
+    power_eaten: int
+    episodes: int
+    wins: int
+    deaths: int
+
+
+def _collect_rollout_ac(*, env: TorchPacmanEnv, model: SharedCNNActorCritic, ghosts: ClassicGhostPolicy, steps: int) -> RolloutAC:
     b = env.batch_size
-    a = env.AGENTS
     c = 13
     h = env.height
     w = env.width
 
-    obs_buf = torch.zeros((t, b, a, c, h, w), device=env.device, dtype=torch.float32)
-    act_buf = torch.zeros((t, b, a), device=env.device, dtype=torch.int64)
-    logp_buf = torch.zeros((t, b, a), device=env.device, dtype=torch.float32)
-    val_buf = torch.zeros((t, b, a), device=env.device, dtype=torch.float32)
-    rew_buf = torch.zeros((t, b, a), device=env.device, dtype=torch.float32)
-    done_buf = torch.zeros((t, b), device=env.device, dtype=torch.bool)
-    info_acc = torch.zeros((t, b, 3), device=env.device, dtype=torch.int64)
+    obs_buf = torch.zeros((steps, b, c, h, w), device=env.device, dtype=torch.float32)
+    act_buf = torch.zeros((steps, b), device=env.device, dtype=torch.int64)
+    logp_buf = torch.zeros((steps, b), device=env.device, dtype=torch.float32)
+    val_buf = torch.zeros((steps, b), device=env.device, dtype=torch.float32)
+    rew_buf = torch.zeros((steps, b), device=env.device, dtype=torch.float32)
+    done_buf = torch.zeros((steps, b), device=env.device, dtype=torch.bool)
+
+    pellets_eaten = 0
+    power_eaten = 0
+    episodes = 0
+    wins = 0
+    deaths = 0
 
     obs = env.get_obs()
-    for step in range(t):
-        obs_buf[step] = obs
-        obs_flat = obs.reshape(b * a, c, h, w)
+    for t in range(int(steps)):
+        pac_obs = obs[:, 0]
+        obs_buf[t] = pac_obs
+
         with torch.no_grad():
-            action_flat, logp_flat, value_flat = _sample(model, obs_flat)
-        action = action_flat.reshape(b, a)
-        logp = logp_flat.reshape(b, a)
-        value = value_flat.reshape(b, a)
+            pac_action, pac_logp, pac_val = _sample_ac(model, pac_obs)
 
-        out = env.step(action)
+        ghost_action = ghosts.act(
+            walls=env.walls,
+            pacman_pos=env.pacman,
+            ghost_pos=env.ghosts,
+            frightened=env.frightened,
+            step_in_ep=env.steps,
+        )
 
-        act_buf[step] = action
-        logp_buf[step] = logp
-        val_buf[step] = value
-        rew_buf[step] = out.reward
-        done_buf[step] = out.done
-        info_acc[step, :, 0] = out.info["pellet_eaten"]
-        info_acc[step, :, 1] = out.info["power_eaten"]
-        info_acc[step, :, 2] = out.info["pac_dead"]
+        acts = torch.zeros((b, env.AGENTS), device=env.device, dtype=torch.int64)
+        acts[:, 0] = pac_action
+        acts[:, 1:] = ghost_action
+
+        out = env.step(acts)
+
+        act_buf[t] = pac_action
+        logp_buf[t] = pac_logp
+        val_buf[t] = pac_val
+        rew_buf[t] = out.reward[:, 0]
+        done_buf[t] = out.done
+
+        pellets_eaten += int(out.info["pellet_eaten"].sum().item())
+        power_eaten += int(out.info["power_eaten"].sum().item())
+        episodes += int(out.done.to(torch.int64).sum().item())
+        wins += int(out.info["win"].sum().item())
+        deaths += int(out.info["pac_dead"].sum().item())
 
         obs = out.obs
         if out.done.any():
             obs = env.reset_done(out.done)
+            ghosts.reset(batch_size=b, pacman_pos=env.pacman)
 
     with torch.no_grad():
-        last_obs = env.get_obs()
-        last_flat = last_obs.reshape(b * a, c, h, w)
-        last_values = model(last_flat).value.reshape(b, a)
+        last_values = model(env.get_obs()[:, 0]).value
 
-    pellets_eaten = int(info_acc[:, :, 0].sum().item())
-    power_eaten = int(info_acc[:, :, 1].sum().item())
-    return obs_buf, act_buf, logp_buf, val_buf, rew_buf, done_buf, last_values, pellets_eaten, power_eaten
+    return RolloutAC(
+        obs=obs_buf,
+        actions=act_buf,
+        logp=logp_buf,
+        values=val_buf,
+        rewards=rew_buf,
+        dones=done_buf,
+        last_values=last_values,
+        pellets_eaten=pellets_eaten,
+        power_eaten=power_eaten,
+        episodes=episodes,
+        wins=wins,
+        deaths=deaths,
+    )
+
+
+def _run_ppo_update(*, model: SharedCNNActorCritic, opt: torch.optim.Optimizer, roll: RolloutAC, ppo: PPOConfig) -> tuple[float, float, float]:
+    gae = compute_gae(
+        roll.rewards,
+        roll.dones,
+        roll.values,
+        roll.last_values,
+        gamma=ppo.gamma,
+        gae_lambda=ppo.gae_lambda,
+    )
+    t, b, c, h, w = roll.obs.shape
+    obs_flat = roll.obs.reshape(t * b, c, h, w)
+    act_flat = roll.actions.reshape(t * b)
+    logp_flat = roll.logp.reshape(t * b)
+    adv_flat = gae.advantages.reshape(t * b)
+    ret_flat = gae.returns.reshape(t * b)
+    stats = ppo_update(
+        model,
+        opt,
+        obs=obs_flat,
+        actions=act_flat,
+        old_logp=logp_flat,
+        advantages=adv_flat,
+        returns=ret_flat,
+        cfg=ppo,
+    )
+    return float(stats.loss), float(stats.entropy), float(stats.approx_kl)
+
+
+def _run_a2c_update(*, model: SharedCNNActorCritic, opt: torch.optim.Optimizer, roll: RolloutAC, ppo: PPOConfig) -> tuple[float, float, float]:
+    gae = compute_gae(
+        roll.rewards,
+        roll.dones,
+        roll.values,
+        roll.last_values,
+        gamma=ppo.gamma,
+        gae_lambda=ppo.gae_lambda,
+    )
+    t, b, c, h, w = roll.obs.shape
+    obs_flat = roll.obs.reshape(t * b, c, h, w)
+    act_flat = roll.actions.reshape(t * b)
+    adv_flat = gae.advantages.reshape(t * b)
+    ret_flat = gae.returns.reshape(t * b)
+    stats = a2c_update(
+        model,
+        opt,
+        obs=obs_flat,
+        actions=act_flat,
+        returns=ret_flat,
+        advantages=adv_flat,
+        value_coef=ppo.value_coef,
+        entropy_coef=ppo.entropy_coef,
+        max_grad_norm=ppo.max_grad_norm,
+    )
+    return float(stats.loss), float(stats.entropy), 0.0
+
+
+def _epsilon(*, step: int, total: int) -> float:
+    if total <= 0:
+        return 0.05
+    frac = min(1.0, max(0.0, float(step) / float(total)))
+    return float(1.0 - 0.95 * frac)
+
+
+def _maybe_report(
+    *,
+    reporter: TelegramReporter | None,
+    sqlite: SqliteLogger,
+    sqlite_path: Path,
+    pct_step: int,
+    db_step: int,
+    total_steps: int,
+    combined_step: int,
+    start_unix: float,
+    states: list[AlgoState],
+    next_report_at: list[int],
+    next_db_at: list[int],
+) -> None:
+    if reporter is None:
+        return
+    if total_steps <= 0:
+        return
+
+    if combined_step >= next_report_at[0]:
+        pct = _fmt_pct(combined_step, total_steps)
+        text = _summary_text(pct=pct, step=combined_step, total=total_steps, elapsed_s=time.time() - start_unix, states=states)
+        reporter.upsert_progress(text=text)
+        next_report_at[0] += max(1, int(total_steps * pct_step / 100))
+
+    if combined_step >= next_db_at[0]:
+        reporter.send_sqlite(db_path=sqlite_path, caption=f"metrics step={combined_step}")
+        next_db_at[0] += max(1, int(total_steps * db_step / 100))
 
 
 def main() -> None:
@@ -103,147 +265,276 @@ def main() -> None:
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--total-steps", type=int, default=2_000_000)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--algo", type=str, default="ppo", choices=["ppo", "a2c", "dqn", "sweep"])
     p.add_argument("--telegram", action="store_true")
     p.add_argument("--telegram-dry-run", action="store_true")
+    p.add_argument("--telegram-progress-every-percent", type=int, default=5)
+    p.add_argument("--telegram-db-every-percent", type=int, default=25)
     args = p.parse_args()
 
-    cfg = TrainConfig(
-        layout_dir=args.layout_dir,
-        run_dir=args.run_dir,
-        device=args.device,
-        batch_size=int(args.batch_size),
-        total_steps=int(args.total_steps),
-        seed=int(args.seed),
-        telegram=bool(args.telegram),
-        telegram_dry_run=bool(args.telegram_dry_run),
-    )
-
-    device = resolve_device(cfg.device)
+    device = resolve_device(str(args.device))
     env_cfg = EnvConfig()
     ppo_cfg = PPOConfig()
-    log_cfg = LogConfig(sqlite_path=str((cfg.run_dir / "metrics.sqlite").as_posix()))
+    log_cfg = LogConfig(sqlite_path=str((Path(args.run_dir) / "metrics.sqlite").as_posix()))
 
-    layouts = load_layouts_from_dir(cfg.layout_dir)
-    env = TorchPacmanEnv(layouts, batch_size=cfg.batch_size, device=device, cfg=env_cfg)
-    env.reset(seed=cfg.seed)
+    layouts = load_layouts_from_dir(Path(args.layout_dir))
+    sqlite_path = Path(log_cfg.sqlite_path)
+    sqlite = SqliteLogger(db_path=sqlite_path)
 
-    model = SharedCNNActorCritic(in_channels=13, actions=env.ACTIONS).to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=ppo_cfg.learning_rate)
-
-    sqlite = SqliteLogger(db_path=Path(log_cfg.sqlite_path))
-
-    reporter = None
-    if cfg.telegram:
-        if cfg.telegram_dry_run:
+    reporter: TelegramReporter | None = None
+    if bool(args.telegram):
+        if bool(args.telegram_dry_run):
             target = TelegramTarget(bot_token="dry_run", chat_id="dry_run")
         else:
-            target = telegram_target_from_env()
-        reporter = TelegramReporter(target=target, dry_run=cfg.telegram_dry_run)
+            target = telegram_target_auto()
+        reporter = TelegramReporter(target=target, dry_run=bool(args.telegram_dry_run))
 
-    steps_per_update = cfg.batch_size * ppo_cfg.rollout_steps * env.AGENTS
-    updates = max(1, (cfg.total_steps + steps_per_update - 1) // steps_per_update)
+    algo_list = ["ppo", "a2c", "dqn"] if str(args.algo) == "sweep" else [str(args.algo)]
+    total_steps_per_algo = int(args.total_steps)
+    total_steps_all = total_steps_per_algo * len(algo_list)
 
-    global_step = 0
-    total_episodes = 0
-    last_progress_step = -1
-    last_sqlite_step = -1
-    last_sqlite_sent_step = -1
+    pct_step = max(1, int(args.telegram_progress_every_percent))
+    db_step = max(1, int(args.telegram_db_every_percent))
+    next_report_at = [max(1, int(total_steps_all * pct_step / 100))]
+    next_db_at = [max(1, int(total_steps_all * db_step / 100))]
 
-    train_start = time.time()
-    for update in range(int(updates)):
-        upd_start = time.time()
-        obs, actions, old_logp, values, rewards, dones, last_values, pellets_eaten, power_eaten = _collect_rollout(
-            env=env, model=model, cfg=ppo_cfg
-        )
+    states = [AlgoState(algo=a) for a in ["ppo", "a2c", "dqn"]]
+    state_by_algo = {s.algo: s for s in states}
 
-        dones_exp = dones[:, :, None].expand(-1, -1, env.AGENTS)
-        gae = compute_gae(
-            rewards,
-            dones_exp,
-            values,
-            last_values,
-            gamma=ppo_cfg.gamma,
-            gae_lambda=ppo_cfg.gae_lambda,
-        )
+    combined_step = 0
+    start_unix = time.time()
 
-        t, b, a, c, h, w = obs.shape
-        obs_flat = obs.reshape(t * b * a, c, h, w)
-        act_flat = actions.reshape(t * b * a)
-        logp_flat = old_logp.reshape(t * b * a)
-        adv_flat = gae.advantages.reshape(t * b * a)
-        ret_flat = gae.returns.reshape(t * b * a)
+    for algo in algo_list:
+        env = TorchPacmanEnv(layouts, batch_size=int(args.batch_size), device=device, cfg=env_cfg)
+        env.reset(seed=int(args.seed))
+        ghosts = ClassicGhostPolicy(device=device)
+        ghosts.reset(batch_size=env.batch_size, pacman_pos=env.pacman)
 
-        stats = ppo_update(
-            model,
-            opt,
-            obs=obs_flat,
-            actions=act_flat,
-            old_logp=logp_flat,
-            advantages=adv_flat,
-            returns=ret_flat,
-            cfg=ppo_cfg,
-        )
+        steps_per_iter = int(env.batch_size) * int(ppo_cfg.rollout_steps)
+        iters = max(1, (total_steps_per_algo + steps_per_iter - 1) // steps_per_iter)
 
-        global_step += steps_per_update
+        st = state_by_algo[algo]
+        st.step = 0
+        st.pellets = 0
+        st.power = 0
+        st.avg_reward = None
+        st.win_rate = None
+        st.death_rate = None
+        st.fps = None
 
-        pac_rew = float(rewards[:, :, 0].mean().item())
-        ghost_rew = float(rewards[:, :, 1:].mean().item())
+        if algo in ("ppo", "a2c"):
+            model = SharedCNNActorCritic(in_channels=13, actions=env.ACTIONS).to(device)
+            opt = torch.optim.Adam(model.parameters(), lr=ppo_cfg.learning_rate)
 
-        upd_time = time.time() - upd_start
-        fps = float(steps_per_update / max(1e-6, upd_time))
-        elapsed_s = float(time.time() - train_start)
+            for i in range(int(iters)):
+                t0 = time.time()
+                roll = _collect_rollout_ac(env=env, model=model, ghosts=ghosts, steps=int(ppo_cfg.rollout_steps))
+                if algo == "ppo":
+                    loss, entropy, kl = _run_ppo_update(model=model, opt=opt, roll=roll, ppo=ppo_cfg)
+                else:
+                    loss, entropy, kl = _run_a2c_update(model=model, opt=opt, roll=roll, ppo=ppo_cfg)
 
-        if global_step // log_cfg.sqlite_flush_every_steps > last_sqlite_step // log_cfg.sqlite_flush_every_steps:
-            sqlite.write_metrics(
-                MetricsRow(
-                    global_step=int(global_step),
-                    episode=int(total_episodes),
-                    pellets_eaten=int(pellets_eaten),
-                    power_eaten=int(power_eaten),
-                    pacman_reward_mean=pac_rew,
-                    ghosts_reward_mean=ghost_rew,
-                    loss=float(stats.loss),
-                    policy_loss=float(stats.policy_loss),
-                    value_loss=float(stats.value_loss),
-                    entropy=float(stats.entropy),
-                    approx_kl=float(stats.approx_kl),
-                    fps=fps,
-                    elapsed_s=elapsed_s,
+                st.step += steps_per_iter
+                combined_step += steps_per_iter
+                st.pellets += int(roll.pellets_eaten)
+                st.power += int(roll.power_eaten)
+                st.avg_reward = float(roll.rewards.mean().item())
+                st.win_rate = (float(roll.wins) / float(roll.episodes)) if roll.episodes > 0 else None
+                st.death_rate = (float(roll.deaths) / float(roll.episodes)) if roll.episodes > 0 else None
+                st.fps = float(steps_per_iter / max(1e-6, time.time() - t0))
+
+                if st.step // log_cfg.sqlite_flush_every_steps != (st.step - steps_per_iter) // log_cfg.sqlite_flush_every_steps:
+                    sqlite.write_metrics(
+                        MetricsRow(
+                            algo=algo,
+                            global_step=int(st.step),
+                            episode=0,
+                            pellets_eaten=int(st.pellets),
+                            power_eaten=int(st.power),
+                            pacman_reward_mean=float(st.avg_reward or 0.0),
+                            ghosts_reward_mean=0.0,
+                            win_rate=st.win_rate,
+                            death_rate=st.death_rate,
+                            loss=float(loss),
+                            policy_loss=None,
+                            value_loss=None,
+                            entropy=float(entropy),
+                            approx_kl=float(kl),
+                            fps=float(st.fps or 0.0),
+                            elapsed_s=float(time.time() - start_unix),
+                        )
+                    )
+
+                _maybe_report(
+                    reporter=reporter,
+                    sqlite=sqlite,
+                    sqlite_path=sqlite_path,
+                    pct_step=pct_step,
+                    db_step=db_step,
+                    total_steps=total_steps_all,
+                    combined_step=combined_step,
+                    start_unix=start_unix,
+                    states=states,
+                    next_report_at=next_report_at,
+                    next_db_at=next_db_at,
                 )
-            )
-            last_sqlite_step = global_step
 
-        if reporter is not None and log_cfg.telegram_progress_every_steps > 0:
-            if global_step // log_cfg.telegram_progress_every_steps > last_progress_step // log_cfg.telegram_progress_every_steps:
-                text = (
-                    f"step={global_step} update={update + 1}/{updates}\n"
-                    f"pellets_eaten={pellets_eaten} power_eaten={power_eaten}\n"
-                    f"pac_rew_mean={pac_rew:.3f} ghost_rew_mean={ghost_rew:.3f}\n"
-                    f"loss={stats.loss:.4f} kl={stats.approx_kl:.6f} ent={stats.entropy:.4f}\n"
-                    f"fps={fps:.0f} elapsed_s={elapsed_s:.0f}"
+                if (i + 1) % 10 == 0:
+                    print(
+                        "algo="
+                        + algo
+                        + " iter="
+                        + str(i + 1)
+                        + " step="
+                        + str(st.step)
+                        + " avg_reward="
+                        + f"{float(st.avg_reward or 0.0):.3f}"
+                        + " fps="
+                        + f"{float(st.fps or 0.0):.0f}"
+                    )
+
+        if algo == "dqn":
+            q = QNetwork(in_channels=13, actions=env.ACTIONS).to(device)
+            target_q = QNetwork(in_channels=13, actions=env.ACTIONS).to(device)
+            target_q.load_state_dict(q.state_dict())
+            opt = torch.optim.Adam(q.parameters(), lr=ppo_cfg.learning_rate)
+
+            obs_shape = (13, env.height, env.width)
+            replay = ReplayBuffer(capacity=200_000, obs_shape=obs_shape, device=device)
+            min_replay = 5_000
+            batch_size = 512
+            target_sync_every = 5_000
+            train_steps_per_iter = 256
+
+            obs = env.get_obs()[:, 0]
+            for i in range(int(iters)):
+                t0 = time.time()
+                ep_done = 0
+                win = 0
+                death = 0
+                reward_sum = 0.0
+
+                for _ in range(int(ppo_cfg.rollout_steps)):
+                    eps = _epsilon(step=st.step, total=total_steps_per_algo)
+                    with torch.no_grad():
+                        qv = q(obs).detach()
+                        greedy = qv.argmax(dim=1)
+                    rnd = torch.randint(low=0, high=env.ACTIONS, size=greedy.shape, device=device)
+                    choose_rand = (torch.rand(greedy.shape, device=device) < eps)
+                    pac_action = torch.where(choose_rand, rnd, greedy)
+
+                    ghost_action = ghosts.act(
+                        walls=env.walls,
+                        pacman_pos=env.pacman,
+                        ghost_pos=env.ghosts,
+                        frightened=env.frightened,
+                        step_in_ep=env.steps,
+                    )
+                    acts = torch.zeros((env.batch_size, env.AGENTS), device=device, dtype=torch.int64)
+                    acts[:, 0] = pac_action
+                    acts[:, 1:] = ghost_action
+
+                    out = env.step(acts)
+                    next_obs = out.obs[:, 0]
+
+                    replay.add(
+                        obs=obs,
+                        actions=pac_action,
+                        rewards=out.reward[:, 0],
+                        next_obs=next_obs,
+                        dones=out.done,
+                    )
+
+                    reward_sum += float(out.reward[:, 0].mean().item())
+                    st.pellets += int(out.info["pellet_eaten"].sum().item())
+                    st.power += int(out.info["power_eaten"].sum().item())
+                    ep_done += int(out.done.to(torch.int64).sum().item())
+                    win += int(out.info["win"].sum().item())
+                    death += int(out.info["pac_dead"].sum().item())
+
+                    obs = next_obs
+                    if out.done.any():
+                        env.reset_done(out.done)
+                        ghosts.reset(batch_size=env.batch_size, pacman_pos=env.pacman)
+                        obs = env.get_obs()[:, 0]
+
+                if len(replay) >= min_replay:
+                    for _ in range(int(train_steps_per_iter)):
+                        batch = replay.sample(batch_size=batch_size)
+                        dqn_update(q, target_q, opt, batch=batch, gamma=ppo_cfg.gamma, max_grad_norm=10.0)
+                        if (st.step + 1) % target_sync_every == 0:
+                            target_q.load_state_dict(q.state_dict())
+
+                st.step += steps_per_iter
+                combined_step += steps_per_iter
+                st.avg_reward = float(reward_sum) / float(max(1, int(ppo_cfg.rollout_steps)))
+                st.win_rate = (float(win) / float(ep_done)) if ep_done > 0 else None
+                st.death_rate = (float(death) / float(ep_done)) if ep_done > 0 else None
+                st.fps = float(steps_per_iter / max(1e-6, time.time() - t0))
+
+                if st.step // log_cfg.sqlite_flush_every_steps != (st.step - steps_per_iter) // log_cfg.sqlite_flush_every_steps:
+                    sqlite.write_metrics(
+                        MetricsRow(
+                            algo=algo,
+                            global_step=int(st.step),
+                            episode=0,
+                            pellets_eaten=int(st.pellets),
+                            power_eaten=int(st.power),
+                            pacman_reward_mean=float(st.avg_reward or 0.0),
+                            ghosts_reward_mean=0.0,
+                            win_rate=st.win_rate,
+                            death_rate=st.death_rate,
+                            loss=None,
+                            policy_loss=None,
+                            value_loss=None,
+                            entropy=None,
+                            approx_kl=None,
+                            fps=float(st.fps or 0.0),
+                            elapsed_s=float(time.time() - start_unix),
+                        )
+                    )
+
+                _maybe_report(
+                    reporter=reporter,
+                    sqlite=sqlite,
+                    sqlite_path=sqlite_path,
+                    pct_step=pct_step,
+                    db_step=db_step,
+                    total_steps=total_steps_all,
+                    combined_step=combined_step,
+                    start_unix=start_unix,
+                    states=states,
+                    next_report_at=next_report_at,
+                    next_db_at=next_db_at,
                 )
-                reporter.upsert_progress(text=text)
-                last_progress_step = global_step
 
-        if reporter is not None and log_cfg.telegram_db_every_steps > 0:
-            if global_step // log_cfg.telegram_db_every_steps > last_sqlite_sent_step // log_cfg.telegram_db_every_steps:
-                reporter.send_sqlite(db_path=Path(log_cfg.sqlite_path), caption=f"metrics step={global_step}")
-                last_sqlite_sent_step = global_step
+                if (i + 1) % 10 == 0:
+                    print(
+                        "algo="
+                        + algo
+                        + " iter="
+                        + str(i + 1)
+                        + " step="
+                        + str(st.step)
+                        + " avg_reward="
+                        + f"{float(st.avg_reward or 0.0):.3f}"
+                        + " fps="
+                        + f"{float(st.fps or 0.0):.0f}"
+                    )
 
-        if (update + 1) % 10 == 0:
-            print(
-                "update="
-                + str(update + 1)
-                + " step="
-                + str(global_step)
-                + " pac_rew="
-                + f"{pac_rew:.3f}"
-                + " ghost_rew="
-                + f"{ghost_rew:.3f}"
-                + " fps="
-                + f"{fps:.0f}"
-            )
-
+    _maybe_report(
+        reporter=reporter,
+        sqlite=sqlite,
+        sqlite_path=sqlite_path,
+        pct_step=pct_step,
+        db_step=db_step,
+        total_steps=total_steps_all,
+        combined_step=total_steps_all,
+        start_unix=start_unix,
+        states=states,
+        next_report_at=[0],
+        next_db_at=[total_steps_all + 1],
+    )
     sqlite.close()
 
 
